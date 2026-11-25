@@ -135,4 +135,30 @@ jobs:
           rm -rf "$P"
           test "$failed" = 0
 
+
+      - name: Redundant Receipt Loom alternative native and target qualification
+        if: ${{ !cancelled() && steps.link.outcome == 'success' }}
+        working-directory: experiments/receipt-loom-003
+        timeout-minutes: 5
+        run: |
+          set -eu
+          P="$RUNNER_TEMP/receipt-redundant"
+          mkdir "$P"
+          cc -std=c11 -Wall -Wextra -Werror -O2 -fsanitize=undefined -fno-sanitize-recover=all redundant_probe.c -o "$P/probe"
+          "$P/probe"
+          "$P/probe" atlas > "$P/atlas.pcm"
+          printf '%s\n' '11f3405d833347260b4e7775e907539674bc63359307d58c6fe191fd951d644e  atlas.pcm' | (cd "$P" && sha256sum -c -)
+          cc -std=c11 -Wall -Wextra -Werror -O2 -fsanitize=undefined -fno-sanitize-recover=all redundant_screen.c -o "$P/screen"
+          "$P/screen" "$P/atlas.pcm"
+          # Work on a scratch copy of our build wrapper, never the pinned upstream.
+          mkdir "$P/src"
+          cp qualify_target.sh qualify_link.sh target_probe.c receipt_loom.h redundant_core.h "$P/src/"
+          cp redundant_app.c "$P/src/app.c"
+          sed -i 's/"receipt_loom.h"/"redundant_core.h"/;s/rl_state/rr_state/;s/rl_render/rr_render/' "$P/src/target_probe.c"
+          sed -i '/cp "$HERE\/receipt_loom.h" firmware\/src\/receipt_loom.h/a cp "$HERE/redundant_core.h" firmware/src/redundant_core.h' "$P/src/qualify_target.sh"
+          sh "$P/src/qualify_target.sh" "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$P/objects"
+          sh "$P/src/qualify_link.sh" "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$P/objects"
+          sha256sum "$P/objects/candidate.elf"
+          rm -rf "$P"
+
 # No binary publication, flash package, release or hardware access.
