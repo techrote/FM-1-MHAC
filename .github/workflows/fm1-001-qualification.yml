@@ -49,4 +49,7 @@ jobs:
           set -eu
           curl -fL --retry 1 --max-time 90 -o "$RUNNER_TEMP/pi32v2.tar.xz" https://github.com/jvitkauskas/pi32v2-llvm/releases/download/pi32v2-23.1.5-2/pi32v2-llvm-23.1.5-2-linux-x64.tar.xz
           sh qualify_target.sh "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/phase-debt-objects"
+      - name: Experimental ELF-only link (no packaging or device I/O)
+        working-directory: experiments/phase-debt-001
+        run: sh qualify_link.sh "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/phase-debt-objects"
 # No combined binary, package, WAV or upstream asset is uploaded/published.
