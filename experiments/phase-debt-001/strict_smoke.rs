@@ -113,6 +113,7 @@ fn run(path: &str, part: FlashPart, budget: u32) -> R<()> {
     let mut since=0u64;
     let mut audio_index=0usize;
     let mut next_log=50u64;
+    let mut bounds=[0usize;4];
     while requested<budget {
         let n=(budget-requested).min(100_000);
         requested+=n;
@@ -136,23 +137,25 @@ fn run(path: &str, part: FlashPart, budget: u32) -> R<()> {
             if !candidate {phase=5;break}
             need(peak(&m.soc.periph.audio)==0,"candidate boot PCM was not silent")?;
             schedule_key(&mut m,"PLAY",now)?;
-            phase=2; since=now; audio_index=len;
+            phase=2; since=now; audio_index=len; bounds[0]=len;
         } else if phase==2 && now-since>=300 {
             need(len>audio_index,"DMA did not advance during PLAY")?;
             let pk=peak(&m.soc.periph.audio[audio_index..]);
             println!("play window samples={} peak={pk}",len-audio_index);
             need(pk>0,"PLAY produced no PCM activity")?;
             need(pk<=6400,"candidate PCM exceeds core bound")?;
+            bounds[1]=len;
             schedule_key(&mut m,"HOME",now)?;
             phase=3; since=now;
         } else if phase==3 && now-since>=180 {
             // Allow modeled scanning, release and audio DMA latency; measure a separate tail.
-            phase=4; since=now; audio_index=len;
+            phase=4; since=now; audio_index=len; bounds[2]=len;
         } else if phase==4 && now-since>=150 {
             need(len>audio_index,"DMA did not advance after HOME")?;
             let pk=peak(&m.soc.periph.audio[audio_index..]);
             println!("mute tail samples={} peak={pk}",len-audio_index);
             need(pk==0,"HOME tail was not silent")?;
+            bounds[3]=len;
             phase=5;break
         }
         if now>=1800 {break}
@@ -167,7 +170,21 @@ fn run(path: &str, part: FlashPart, budget: u32) -> R<()> {
         m.soc.lcd.frames,m.soc.lcd.display_on,m.soc.unknown_accesses().len(),m.soc.dbg_cause,
         m.soc.emu_cause,m.soc.cpu1_fault,m.changed_sectors().len());
     for u in m.soc.unknown_accesses().iter().take(12) {println!("unknown_mmio {u:?}")}
-    // Reaching the bounded horizon is only a smoke result, not proof of boot/audio.
+    // Capture original candidate PCM only, inside disposable runner storage.
+    // No combined binary, stock audio or emulator WAV is published.
+    need(m.changed_sectors().is_empty(),"modeled flash sectors changed")?;
+    if candidate && result.is_ok() {
+        if let Some(prefix)=env::var_os("FM1_PCM_CAPTURE_PREFIX") {
+            use std::io::Write;
+            let prefix=std::path::PathBuf::from(prefix);
+            need(bounds[3]==a.len() && a.len()%2==0,"invalid stereo capture")?;
+            let mut f=fs::File::create(prefix.with_extension("pcm")).map_err(|e|e.to_string())?;
+            for &sample in a { f.write_all(&sample.to_le_bytes()).map_err(|e|e.to_string())?; }
+            fs::write(prefix.with_extension("bounds"),
+                format!("{} {} {} {}\n",bounds[0],bounds[1],bounds[2],bounds[3]))
+                .map_err(|e|e.to_string())?;
+        }
+    }
     result
 }
 fn main() {
