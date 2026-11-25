@@ -32,7 +32,7 @@ def audit(path, tc):
     blob = path.read_bytes()
     require(blob[:7] == b"\x7fELF\x01\x01\x01", "not little-endian ELF32")
     h = struct.unpack_from("<16sHHIIIIIHHHHHH", blob)
-    require(h[1] == 2 and h[4] == BASE, "unexpected type or entry")
+    require(h[1] == 2 and h[2] == 241 and h[4] == BASE, "unexpected type or entry")
     phoff, shoff, phentsize, phnum, shentsize, shnum, shstr = (
         h[5], h[6], h[9], h[10], h[11], h[12], h[13])
     require(phentsize == 32 and shentsize == 40 and 0 < shstr < shnum,
@@ -94,14 +94,26 @@ def audit(path, tc):
     unknown = [ln for ln in il if re.search(r"<unknown>|\bunknown\b", ln, re.I)]
     calls = [ln for ln in rl if re.search(r"\bcall\w*\b", ln, re.I)]
     rom = [ln for ln in il if re.search(r"\b(?:0x)?ffc[0-9a-f]{5}\b", ln, re.I)]
+    # Keep exact decode failures, with symbol context, rather than suppressing
+    # baseline warnings or treating every byte in mixed code/rodata as executable.
+    def context(line):
+        addr = int(line.split(":")[0].strip(), 16)
+        prior = [(v, k) for k,v in syms.items() if v <= addr]
+        nearest = max(prior, default=(0, "?"))
+        return {"line":line, "nearest_symbol":nearest[1], "offset":addr-nearest[0]}
+    # Signed decimal immediates can denote the same ROM range as hexadecimal.
+    for ln in il:
+        for val in re.findall(r"=\s*(-?\d+)\s*(?:<|$)", ln):
+            if 0xFFC00000 <= int(val) & 0xFFFFFFFF < 0xFFD00000:
+                if ln not in rom:
+                    rom.append(ln)
     print(json.dumps({"elf":path.name, "sha256":hashlib.sha256(blob).hexdigest(),
           "machine":h[2], "entry":hex(h[4]), "load_extent":loads[-1][1]-BASE,
           "section_sizes":{n:s[5] for n,s in mapped.items()},
           "instruction_lines":len(il), "ram_instruction_lines":len(rl),
-          "unknown_lines":len(unknown), "ram_call_screen":calls[:8],
+          "unknown_lines":len(unknown), "unknown_details":[context(x) for x in unknown[:16]], "ram_call_screen":calls[:8],
           "rom_hex_screen":rom[:8], "instruction_sample":il[:4]}, sort_keys=True), flush=True)
-    require(not unknown and not calls and not rom, "LLVM screen flagged instructions; inspect")
-    return hashlib.sha256(blob).hexdigest()
+    return hashlib.sha256(blob).hexdigest(), bool(unknown or calls or rom)
 
 
 def main():
@@ -127,11 +139,15 @@ def main():
             f.write("\n/* negative control */\n#define BAD_ADDR 0x10000\n")
         require(module.mmio_check(), "MMIO checker failed to detect planted violation")
         print("pinned_mmio_baseline_candidate_negative_control=PASS", flush=True)
+    held = []
     for name in ("baseline", "candidate"):
-        a = audit(first/(name+".elf"), tc)
-        b = audit(second/(name+".elf"), tc)
+        a, bad_a = audit(first/(name+".elf"), tc)
+        b, bad_b = audit(second/(name+".elf"), tc)
         require(a == b, f"{name} ELF differs between independent build directories")
         print(f"{name}_independent_ELF_rebuild=PASS {a}", flush=True)
+        if bad_a or bad_b:
+            held.append(name)
+    require(not held, f"LLVM screen HOLD: {held}; inspect exact unknown/call/ROM lines")
     print("ELF static audit PASS; ROM screen is limited, no runtime or installability claim")
 
 
