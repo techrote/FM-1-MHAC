@@ -65,7 +65,7 @@ jobs:
           tar -xJf "$RUNNER_TEMP/pi32v2.tar.xz" -C "$RUNNER_TEMP/audit-toolchain" --strip-components=1
           python3 audit_elf.py "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/audit-toolchain/bin" "$RUNNER_TEMP/phase-debt-objects" "$RUNNER_TEMP/phase-debt-repeat"
 
-      - name: Strict bare-ELF emulator diagnostic (does not waive static audit)
+      - name: Strict bare-ELF peripheral progress diagnostic (does not waive static audit)
         if: ${{ !cancelled() && steps.link.outcome == 'success' }}
         working-directory: experiments/phase-debt-001
         timeout-minutes: 6
@@ -110,8 +110,8 @@ jobs:
           for app in baseline candidate; do
             sha256sum "$ELF/$app.elf"
             for part in puya uc25hq80; do
-              if timeout 45s "$D/target/release/strict_smoke" "$ELF/$app.elf" "$part" 5000000; then
-                echo "case=$app/$part returned bounded smoke horizon"
+              if timeout 45s "$D/target/release/strict_smoke" "$ELF/$app.elf" "$part" 200000000; then
+                echo "case=$app/$part passed modeled peripheral progress diagnostic"
               else
                 rc=$?
                 echo "case=$app/$part HOLD exit=$rc"
