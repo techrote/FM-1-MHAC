@@ -13,7 +13,7 @@ jobs:
   qualify:
     if: github.head_ref == 'fm1/001-phase-debt' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Checkout exact public PR merge revision
         run: |
@@ -52,6 +52,7 @@ jobs:
           curl -fL --retry 1 --max-time 90 -o "$RUNNER_TEMP/pi32v2.tar.xz" https://github.com/jvitkauskas/pi32v2-llvm/releases/download/pi32v2-23.1.5-2/pi32v2-llvm-23.1.5-2-linux-x64.tar.xz
           sh qualify_target.sh "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/phase-debt-objects"
       - name: Experimental ELF-only link (no packaging or device I/O)
+        id: link
         working-directory: experiments/phase-debt-001
         run: sh qualify_link.sh "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/phase-debt-objects"
       - name: Independent target rebuild and ELF/MMIO audit (no package)
@@ -63,4 +64,59 @@ jobs:
           mkdir "$RUNNER_TEMP/audit-toolchain"
           tar -xJf "$RUNNER_TEMP/pi32v2.tar.xz" -C "$RUNNER_TEMP/audit-toolchain" --strip-components=1
           python3 audit_elf.py "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/audit-toolchain/bin" "$RUNNER_TEMP/phase-debt-objects" "$RUNNER_TEMP/phase-debt-repeat"
+
+      - name: Strict bare-ELF emulator diagnostic (does not waive static audit)
+        if: ${{ !cancelled() && steps.link.outcome == 'success' }}
+        working-directory: experiments/phase-debt-001
+        timeout-minutes: 6
+        run: |
+          set -eu
+          EMU="$RUNNER_TEMP/fm1-emu"
+          PIN=736aded65c8e2e9d652cf595fca248734483a877
+          git init -q "$EMU"
+          git -C "$EMU" remote add origin https://github.com/joakimeriksson/fm1-emu.git
+          git -C "$EMU" fetch --depth=1 origin "$PIN"
+          git -C "$EMU" checkout --detach FETCH_HEAD
+          test "$(git -C "$EMU" rev-parse HEAD)" = "$PIN"
+          rustup toolchain install 1.91.1 --profile minimal
+          rustup run 1.91.1 rustc --version --verbose
+          D="$RUNNER_TEMP/fm1-strict-smoke"
+          mkdir -p "$D/src"
+          cp strict_smoke.rs "$D/src/main.rs"
+          cat > "$D/Cargo.toml" <<EOF
+          [package]
+          name = "strict_smoke"
+          version = "0.1.0"
+          edition = "2021"
+          [dependencies]
+          fm1-soc = { path = "$EMU/crates/fm1-soc" }
+          fm1-core = { path = "$EMU/crates/fm1-core" }
+          [workspace]
+          EOF
+          rustup run 1.91.1 cargo generate-lockfile --offline --manifest-path "$D/Cargo.toml"
+          cat "$D/Cargo.lock"
+          rustup run 1.91.1 cargo test --offline --locked --manifest-path "$D/Cargo.toml"
+          rustup run 1.91.1 cargo build --release --offline --locked --manifest-path "$D/Cargo.toml"
+          test -z "$(git -C "$EMU" status --porcelain)"
+          # Record historical anomaly context even though its classification remains HOLD.
+          TC="$RUNNER_TEMP/audit-toolchain/bin"
+          ELF="$RUNNER_TEMP/phase-debt-objects"
+          if test -x "$TC/llvm-objdump"; then
+            "$TC/llvm-readelf" -s "$ELF/baseline.elf" | grep -E 'fm1_cstart|FUNC' | head -40 || true
+            "$TC/llvm-objdump" -d --start-address=0x02002240 --stop-address=0x02002278 "$ELF/baseline.elf" || true
+          fi
+          failed=0
+          for app in baseline candidate; do
+            sha256sum "$ELF/$app.elf"
+            for part in puya uc25hq80; do
+              if timeout 45s "$D/target/release/strict_smoke" "$ELF/$app.elf" "$part" 5000000; then
+                echo "case=$app/$part returned bounded smoke horizon"
+              else
+                rc=$?
+                echo "case=$app/$part HOLD exit=$rc"
+                failed=1
+              fi
+            done
+          done
+          exit "$failed"
 # No combined binary, package, WAV or upstream asset is uploaded/published.
