@@ -1,0 +1,3 @@
+# FM-1 MHAC
+
+Experimental embedded acoustic instruments and firmware research for the M-VAVE FM-1. Research authority: https://github.com/techrote/MachineHumanAudioCybersemiotics. Firmware experiments, host qualification and hardware-specific evidence belong here. Hardware revision, build, recovery and physical audition must be verified separately; no image is approved for flashing by this README. FM-1-CYDaux and upstream projects are read-only references. No repository-wide license is declared; third-party reuse requires explicit compatible terms and retained notices. Work on issue-scoped draft branches.
