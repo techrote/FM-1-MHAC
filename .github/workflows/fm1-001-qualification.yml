@@ -33,6 +33,8 @@ jobs:
           cc -std=c11 -Wall -Wextra -Werror -O2 -fsanitize=undefined -Ihost-shim panel_replay.c -o panel_replay
           ./panel_replay
           sha256sum panel-replay.wav
+          cc -std=c11 -Wall -Wextra -Werror -O2 -fsanitize=undefined transition_stress.c -o transition_stress
+          ./transition_stress
       - name: Fetch read-only pinned Dinghy source
         run: |
           set -eu
