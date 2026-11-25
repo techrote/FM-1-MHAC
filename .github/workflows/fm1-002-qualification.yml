@@ -139,7 +139,7 @@ jobs:
       - name: Redundant Receipt Loom alternative native and target qualification
         if: ${{ !cancelled() && steps.link.outcome == 'success' }}
         working-directory: experiments/receipt-loom-003
-        timeout-minutes: 5
+        timeout-minutes: 10
         run: |
           set -eu
           P="$RUNNER_TEMP/receipt-redundant"
@@ -159,6 +159,39 @@ jobs:
           sh "$P/src/qualify_target.sh" "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$P/objects"
           sh "$P/src/qualify_link.sh" "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$P/objects"
           sha256sum "$P/objects/candidate.elf"
+          python3 redundant_decode.py "$P/atlas.pcm" --selftest
+          cc -std=c11 -Wall -Wextra -Werror -O2 -fsanitize=undefined -fno-sanitize-recover=all redundant_reference.c -o "$P/reference"
+          for mode in $(seq 0 4); do
+            "$P/reference" "$mode" > "$P/ref-$mode.pcm" 2> "$P/ref-$mode.bounds"
+            python3 redundant_decode.py "$P/atlas.pcm" "$P/ref-$mode" "$mode"
+          done
+          if python3 redundant_decode.py "$P/atlas.pcm" "$P/ref-0" 3; then
+            echo 'HOLD: wrong repeated-token mode accepted'; exit 1
+          fi
+          D="$RUNNER_TEMP/receipt-strict"
+          ELF="$P/objects/candidate.elf"
+          test -x "$D/target/release/strict_receipt"
+          failed=0
+          for part in puya uc25hq80; do
+            if test "$part" = puya; then modes="0 1 2 3 4"; else modes="0 3"; fi
+            for mode in $modes; do
+              prefix="$P/$part-$mode"
+              if FM1_PANEL_MODE="$mode" FM1_PCM_CAPTURE_PREFIX="$prefix" timeout 60s "$D/target/release/strict_receipt" "$ELF" "$part" 800000000; then
+                if python3 redundant_decode.py "$P/atlas.pcm" "$prefix" "$mode"; then
+                  echo "redundant case=$part/$mode PASS modeled full and aligned sparse acoustic contract"
+                else
+                  echo "redundant case=$part/$mode HOLD decoder"; failed=1
+                fi
+              else
+                echo "redundant case=$part/$mode HOLD emulator"; failed=1
+              fi
+            done
+          done
+          if test "$failed" = 0; then
+            cmp "$P/puya-0.pcm" "$P/uc25hq80-0.pcm"
+            cmp "$P/puya-3.pcm" "$P/uc25hq80-3.pcm"
+          fi
           rm -rf "$P"
+          test "$failed" = 0
 
 # No binary publication, flash package, release or hardware access.
