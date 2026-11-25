@@ -13,7 +13,7 @@ jobs:
   qualify:
     if: github.head_ref == 'fm1/005-scope-weave' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - name: Checkout exact public PR merge revision
         run: |
@@ -33,6 +33,16 @@ jobs:
           done
           cmp "$RUNNER_TEMP/gcc.wav" "$RUNNER_TEMP/clang.wav"
           printf '%s\n' 'd0ef28f1703cb312f6da700acfb54ebdb8761192ad6daa48d9b629dd86929bea  gcc.wav' | (cd "$RUNNER_TEMP" && sha256sum -c -)
+      - name: Native exact acoustic inverse and panel fixture
+        working-directory: experiments/scope-weave-005
+        run: |
+          set -eu
+          python3 scope_inverse.py --cc gcc > "$RUNNER_TEMP/inverse-gcc.txt"
+          python3 scope_inverse.py --cc clang > "$RUNNER_TEMP/inverse-clang.txt"
+          cmp "$RUNNER_TEMP/inverse-gcc.txt" "$RUNNER_TEMP/inverse-clang.txt"
+          cat "$RUNNER_TEMP/inverse-gcc.txt"
+          grep -Fx 'native atlas+phrases sha256 5c7512256a5d91ac6ed00a30059174691461e5d31e4964fd13533dfbd23867f6' "$RUNNER_TEMP/inverse-gcc.txt"
+          python3 panel_inverse.py
       - name: Fetch pinned Dinghy and toolchain
         run: |
           set -eu
@@ -42,6 +52,7 @@ jobs:
           git -C "$RUNNER_TEMP/dinghy" checkout --detach FETCH_HEAD
           curl -fL --retry 1 --max-time 90 -o "$RUNNER_TEMP/pi32v2.tar.xz" https://github.com/jvitkauskas/pi32v2-llvm/releases/download/pi32v2-23.1.5-2/pi32v2-llvm-23.1.5-2-linux-x64.tar.xz
       - name: Actual target compilation and ELF link
+        id: link
         working-directory: experiments/scope-weave-005
         run: |
           set -eu
@@ -56,4 +67,64 @@ jobs:
           mkdir "$RUNNER_TEMP/audit-toolchain"
           tar -xJf "$RUNNER_TEMP/pi32v2.tar.xz" -C "$RUNNER_TEMP/audit-toolchain" --strip-components=1
           python3 audit_elf.py "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/audit-toolchain/bin" "$RUNNER_TEMP/scope-objects" "$RUNNER_TEMP/scope-repeat"
+      - name: Scope Weave strict modeled panel and acoustic inverse
+        if: ${{ !cancelled() && steps.link.outcome == 'success' }}
+        working-directory: experiments/scope-weave-005
+        timeout-minutes: 12
+        run: |
+          set -eu
+          P="$RUNNER_TEMP/scope-pcm"
+          mkdir "$P"
+          EMU="$RUNNER_TEMP/fm1-emu"
+          PIN=736aded65c8e2e9d652cf595fca248734483a877
+          git init -q "$EMU"
+          git -C "$EMU" remote add origin https://github.com/joakimeriksson/fm1-emu.git
+          git -C "$EMU" fetch --depth=1 origin "$PIN"
+          git -C "$EMU" checkout --detach FETCH_HEAD
+          test "$(git -C "$EMU" rev-parse HEAD)" = "$PIN"
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup run 1.95.0 rustc --version --verbose
+          D="$RUNNER_TEMP/scope-strict"
+          mkdir -p "$D/src"
+          cp strict_scope.rs "$D/src/main.rs"
+          cat > "$D/Cargo.toml" <<EOF
+          [package]
+          name = "strict_scope"
+          version = "0.1.0"
+          edition = "2021"
+          [dependencies]
+          fm1-soc = { path = "$EMU/crates/fm1-soc" }
+          fm1-core = { path = "$EMU/crates/fm1-core" }
+          [workspace]
+          EOF
+          rustup run 1.95.0 cargo generate-lockfile --offline --manifest-path "$D/Cargo.toml"
+          rustup run 1.95.0 cargo test --offline --locked --manifest-path "$D/Cargo.toml"
+          rustup run 1.95.0 cargo build --release --offline --locked --manifest-path "$D/Cargo.toml"
+          test -z "$(git -C "$EMU" status --porcelain)"
+          ELF="$RUNNER_TEMP/scope-objects/candidate.elf"
+          sha256sum "$ELF"
+          failed=0
+          for part in puya uc25hq80; do
+            if test "$part" = puya; then modes="0 1 2"; else modes="0"; fi
+            for mode in $modes; do
+              for preset in 3 9; do
+                prefix="$P/$part-$mode-$preset"
+                if FM1_PANEL_MODE="$mode" FM1_PANEL_PRESET="$preset" FM1_PCM_CAPTURE_PREFIX="$prefix" timeout 60s "$D/target/release/strict_scope" "$ELF" "$part" 800000000; then
+                  if python3 panel_inverse.py "$prefix" "$mode" "$preset"; then
+                    echo "case=$part/$mode/$preset PASS modeled scope contract"
+                  else
+                    echo "case=$part/$mode/$preset HOLD decoder"; failed=1
+                  fi
+                else
+                  echo "case=$part/$mode/$preset HOLD emulator"; failed=1
+                fi
+              done
+            done
+          done
+          if test "$failed" = 0; then
+            cmp "$P/puya-0-3.pcm" "$P/uc25hq80-0-3.pcm"
+            cmp "$P/puya-0-9.pcm" "$P/uc25hq80-0-9.pcm"
+          fi
+          rm -rf "$P"
+          test "$failed" = 0
 # No package, no binary publication or physical device access.
