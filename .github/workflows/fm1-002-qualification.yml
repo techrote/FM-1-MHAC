@@ -68,6 +68,11 @@ jobs:
           cc -std=c11 -Wall -Wextra -Werror -O2 -fsanitize=undefined token_atlas.c -o "$P/atlas"
           "$P/atlas" > "$P/atlas.pcm"
           printf '%s\n' '7f4afc4f0749285ace652fadcf049f9a49f165691377ea63fd63ca3e730d5f62  atlas.pcm' | (cd "$P" && sha256sum -c -)
+          cc -std=c11 -Wall -Wextra -Werror -O2 -fsanitize=undefined separation.c -o "$P/separation"
+          "$P/separation" "$P/atlas.pcm" > "$P/separation.txt"
+          cat "$P/separation.txt"
+          grep -Fx 'family=0 pairs=45 certified=45 inconclusive=0' "$P/separation.txt"
+          grep -Fx 'family=1 pairs=3275520 certified=3275520 inconclusive=0' "$P/separation.txt"
           python3 token_decode.py "$P/atlas.pcm" --selftest
           cc -std=c11 -Wall -Wextra -Werror -O2 -fsanitize=undefined panel_reference.c -o "$P/reference"
           for mode in $(seq 0 9); do
