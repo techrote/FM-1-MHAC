@@ -78,8 +78,9 @@ jobs:
           git -C "$EMU" fetch --depth=1 origin "$PIN"
           git -C "$EMU" checkout --detach FETCH_HEAD
           test "$(git -C "$EMU" rev-parse HEAD)" = "$PIN"
-          rustup toolchain install 1.91.1 --profile minimal
-          rustup run 1.91.1 rustc --version --verbose
+          # Rust 1.95 stabilizes the if-let match guards used by this exact fm1-core pin.
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup run 1.95.0 rustc --version --verbose
           D="$RUNNER_TEMP/fm1-strict-smoke"
           mkdir -p "$D/src"
           cp strict_smoke.rs "$D/src/main.rs"
@@ -93,16 +94,16 @@ jobs:
           fm1-core = { path = "$EMU/crates/fm1-core" }
           [workspace]
           EOF
-          rustup run 1.91.1 cargo generate-lockfile --offline --manifest-path "$D/Cargo.toml"
+          rustup run 1.95.0 cargo generate-lockfile --offline --manifest-path "$D/Cargo.toml"
           cat "$D/Cargo.lock"
-          rustup run 1.91.1 cargo test --offline --locked --manifest-path "$D/Cargo.toml"
-          rustup run 1.91.1 cargo build --release --offline --locked --manifest-path "$D/Cargo.toml"
+          rustup run 1.95.0 cargo test --offline --locked --manifest-path "$D/Cargo.toml"
+          rustup run 1.95.0 cargo build --release --offline --locked --manifest-path "$D/Cargo.toml"
           test -z "$(git -C "$EMU" status --porcelain)"
           # Record historical anomaly context even though its classification remains HOLD.
           TC="$RUNNER_TEMP/audit-toolchain/bin"
           ELF="$RUNNER_TEMP/phase-debt-objects"
           if test -x "$TC/llvm-objdump"; then
-            "$TC/llvm-readelf" -s "$ELF/baseline.elf" | grep -E 'fm1_cstart|FUNC' | head -40 || true
+            "$TC/llvm-readelf" -s "$ELF/baseline.elf" | grep -E 'fm1_cstart' || true
             "$TC/llvm-objdump" -d --start-address=0x02002240 --stop-address=0x02002278 "$ELF/baseline.elf" || true
           fi
           failed=0
