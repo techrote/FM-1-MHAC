@@ -1,0 +1,59 @@
+name: FM1-003 isolated native and target ELF qualification
+on:
+  pull_request:
+    paths:
+      - 'experiments/scope-weave-005/**'
+      - '.github/workflows/fm1-003-qualification.yml'
+permissions:
+  contents: read
+concurrency:
+  group: fm1-003-qualification
+  cancel-in-progress: true
+jobs:
+  qualify:
+    if: github.head_ref == 'fm1/005-scope-weave' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact public PR merge revision
+        run: |
+          set -eu
+          git init -q
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git fetch --depth=1 origin "$GITHUB_REF"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Native grammar and waveform falsifiers
+        working-directory: experiments/scope-weave-005
+        run: |
+          set -eu
+          for c in gcc clang; do
+            "$c" -std=c11 -O2 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all verify.c -o "$RUNNER_TEMP/scope-$c"
+            "$RUNNER_TEMP/scope-$c" "$RUNNER_TEMP/$c.wav"
+          done
+          cmp "$RUNNER_TEMP/gcc.wav" "$RUNNER_TEMP/clang.wav"
+          printf '%s\n' 'd0ef28f1703cb312f6da700acfb54ebdb8761192ad6daa48d9b629dd86929bea  gcc.wav' | (cd "$RUNNER_TEMP" && sha256sum -c -)
+      - name: Fetch pinned Dinghy and toolchain
+        run: |
+          set -eu
+          git init -q "$RUNNER_TEMP/dinghy"
+          git -C "$RUNNER_TEMP/dinghy" remote add origin https://github.com/zvenson/dinghy.git
+          git -C "$RUNNER_TEMP/dinghy" fetch --depth=1 origin 92f17b28f2d05f2f78fd1b160b58475d518902c8
+          git -C "$RUNNER_TEMP/dinghy" checkout --detach FETCH_HEAD
+          curl -fL --retry 1 --max-time 90 -o "$RUNNER_TEMP/pi32v2.tar.xz" https://github.com/jvitkauskas/pi32v2-llvm/releases/download/pi32v2-23.1.5-2/pi32v2-llvm-23.1.5-2-linux-x64.tar.xz
+      - name: Actual target compilation and ELF link
+        working-directory: experiments/scope-weave-005
+        run: |
+          set -eu
+          sh qualify_target.sh "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/scope-objects"
+          sh qualify_link.sh "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/scope-objects"
+      - name: Independent rebuild and inherited static audit
+        working-directory: experiments/scope-weave-005
+        run: |
+          set -eu
+          sh qualify_target.sh "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/scope-repeat"
+          sh qualify_link.sh "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/scope-repeat"
+          mkdir "$RUNNER_TEMP/audit-toolchain"
+          tar -xJf "$RUNNER_TEMP/pi32v2.tar.xz" -C "$RUNNER_TEMP/audit-toolchain" --strip-components=1
+          python3 audit_elf.py "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/audit-toolchain/bin" "$RUNNER_TEMP/scope-objects" "$RUNNER_TEMP/scope-repeat"
+# No package, no binary publication or physical device access.
