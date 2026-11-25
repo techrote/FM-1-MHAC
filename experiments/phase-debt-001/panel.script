@@ -1,0 +1,20 @@
+# Actual Dinghy host script; timestamps in ms, FM-1 button/encoder IDs.
+100 shot
+200 keys 0x4000000
+300 enc 2 -40
+400 keys 0
+500 btn 12
+800 shot
+1000 btn 3
+1500 btn 3
+2000 btn 3
+2500 btn 3
+3000 btn 8
+3100 shot
+3500 btn 3
+3500 enc 2 -16
+3600 btn 12
+4100 btn 3
+4600 shot
+4700 btn 8
+5000 end
