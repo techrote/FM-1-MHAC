@@ -13,7 +13,7 @@ jobs:
   qualify:
     if: github.head_ref == 'fm1/003-receipt-loom' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - name: Checkout exact public PR merge revision
         run: |
@@ -40,6 +40,7 @@ jobs:
           git -C "$RUNNER_TEMP/dinghy" fetch --depth=1 origin 92f17b28f2d05f2f78fd1b160b58475d518902c8
           git -C "$RUNNER_TEMP/dinghy" checkout --detach FETCH_HEAD
       - name: Target compile and link (no package)
+        id: link
         working-directory: experiments/receipt-loom-003
         run: |
           set -eu
@@ -55,4 +56,78 @@ jobs:
           mkdir "$RUNNER_TEMP/audit-toolchain"
           tar -xJf "$RUNNER_TEMP/pi32v2.tar.xz" -C "$RUNNER_TEMP/audit-toolchain" --strip-components=1
           python3 audit_elf.py "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/audit-toolchain/bin" "$RUNNER_TEMP/receipt-objects" "$RUNNER_TEMP/receipt-repeat"
+
+      - name: Receipt Loom native atlas and strict modeled panel qualification
+        if: ${{ !cancelled() && steps.link.outcome == 'success' }}
+        working-directory: experiments/receipt-loom-003
+        timeout-minutes: 12
+        run: |
+          set -eu
+          P="$RUNNER_TEMP/receipt-pcm"
+          mkdir "$P"
+          cc -std=c11 -Wall -Wextra -Werror -O2 -fsanitize=undefined token_atlas.c -o "$P/atlas"
+          "$P/atlas" > "$P/atlas.pcm"
+          printf '%s\n' '7f4afc4f0749285ace652fadcf049f9a49f165691377ea63fd63ca3e730d5f62  atlas.pcm' | (cd "$P" && sha256sum -c -)
+          python3 token_decode.py "$P/atlas.pcm" --selftest
+          cc -std=c11 -Wall -Wextra -Werror -O2 -fsanitize=undefined panel_reference.c -o "$P/reference"
+          for mode in $(seq 0 9); do
+            "$P/reference" "$mode" > "$P/ref-$mode.pcm" 2> "$P/ref-$mode.bounds"
+            python3 token_decode.py "$P/atlas.pcm" "$P/ref-$mode" "$mode"
+          done
+          # Exact legacy alias is intentional. Wrong tagged mode must reject.
+          cmp "$P/ref-0.pcm" "$P/ref-3.pcm"
+          if python3 token_decode.py "$P/atlas.pcm" "$P/ref-5" 8; then
+            echo 'HOLD: wrong tagged mode accepted'; exit 1
+          fi
+          EMU="$RUNNER_TEMP/fm1-emu"
+          PIN=736aded65c8e2e9d652cf595fca248734483a877
+          git init -q "$EMU"
+          git -C "$EMU" remote add origin https://github.com/joakimeriksson/fm1-emu.git
+          git -C "$EMU" fetch --depth=1 origin "$PIN"
+          git -C "$EMU" checkout --detach FETCH_HEAD
+          test "$(git -C "$EMU" rev-parse HEAD)" = "$PIN"
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup run 1.95.0 rustc --version --verbose
+          D="$RUNNER_TEMP/receipt-strict"
+          mkdir -p "$D/src"
+          cp strict_receipt.rs "$D/src/main.rs"
+          cat > "$D/Cargo.toml" <<EOF
+          [package]
+          name = "strict_receipt"
+          version = "0.1.0"
+          edition = "2021"
+          [dependencies]
+          fm1-soc = { path = "$EMU/crates/fm1-soc" }
+          fm1-core = { path = "$EMU/crates/fm1-core" }
+          [workspace]
+          EOF
+          rustup run 1.95.0 cargo generate-lockfile --offline --manifest-path "$D/Cargo.toml"
+          rustup run 1.95.0 cargo test --offline --locked --manifest-path "$D/Cargo.toml"
+          rustup run 1.95.0 cargo build --release --offline --locked --manifest-path "$D/Cargo.toml"
+          test -z "$(git -C "$EMU" status --porcelain)"
+          ELF="$RUNNER_TEMP/receipt-objects/candidate.elf"
+          sha256sum "$ELF"
+          failed=0
+          for part in puya uc25hq80; do
+            if test "$part" = puya; then modes="$(seq 0 9)"; else modes="5 8"; fi
+            for mode in $modes; do
+              prefix="$P/$part-$mode"
+              if FM1_PANEL_MODE="$mode" FM1_PCM_CAPTURE_PREFIX="$prefix" timeout 60s "$D/target/release/strict_receipt" "$ELF" "$part" 800000000; then
+                if python3 token_decode.py "$P/atlas.pcm" "$prefix" "$mode"; then
+                  echo "case=$part/$mode PASS modeled acoustic contract"
+                else
+                  echo "case=$part/$mode HOLD decoder"; failed=1
+                fi
+              else
+                echo "case=$part/$mode HOLD emulator"; failed=1
+              fi
+            done
+          done
+          if test "$failed" = 0; then
+            cmp "$P/puya-5.pcm" "$P/uc25hq80-5.pcm"
+            cmp "$P/puya-8.pcm" "$P/uc25hq80-8.pcm"
+          fi
+          rm -rf "$P"
+          test "$failed" = 0
+
 # No binary publication, flash package, release or hardware access.
