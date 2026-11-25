@@ -30,7 +30,7 @@ Read-only alternate leads, live main pins (not qualified build pins):
 - [SLOOP](https://github.com/isod89/sloop-fm1/tree/bac9c05ea7627449405aa10e48da21d75b6c8c56), GPL-3.0 per README.
 - [Skiff](https://github.com/illuminus5/skiff/tree/5eab213620248b3af99eeeea30900fc6266128c4), open Felucca derivative, exact component license audit pending.
 - [X0X](https://github.com/charlesvestal/fm1-x0x/tree/6515e77d978c23414c80162558532f0b4312dd4f), GPL-3.0-only per README.
-- [Vendor FM1 Open V14](https://github.com/m-vave/fm1_open/tree/4c7491d0eae3cded00be868290251afbc41), GPLv3 with SDK linking exception; binary SDK separate terms. Vendor documents Windows toolchain 2.5.3 with manifest verification. Different from stock V16 (vendor download page dates V16 2026-10-21). Do not equate these versions.
+- [Vendor FM1 Open V14](https://github.com/m-vave/fm1_open/tree/4c7496daac04a95ff10d1afdcc8f9ead2dbabc41), GPLv3 with SDK linking exception; binary SDK separate terms. Vendor documents Windows toolchain 2.5.3 with manifest verification. Different from stock V16 (vendor download page dates V16 2026-10-21). Do not equate these versions.
 - [Vendor downloads](https://www.m-vave.com/appdownload); stock restore package must match unit and backup. [Community emulator](https://github.com/joakimeriksson/fm1-emu) is a future qualification route, not used here.
 
 ## Next build gate (no flashing)
