@@ -1,0 +1,58 @@
+name: FM1-002 isolated host and target ELF qualification
+on:
+  pull_request:
+    paths:
+      - 'experiments/receipt-loom-003/**'
+      - '.github/workflows/fm1-002-qualification.yml'
+permissions:
+  contents: read
+concurrency:
+  group: fm1-002-qualification
+  cancel-in-progress: true
+jobs:
+  qualify:
+    if: github.head_ref == 'fm1/003-receipt-loom' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact public PR merge revision
+        run: |
+          set -eu
+          git init -q
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git fetch --depth=1 origin "$GITHUB_REF"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Native legacy and tagged witness
+        working-directory: experiments/receipt-loom-003
+        run: |
+          set -eu
+          cc -std=c11 -Wall -Wextra -Werror -O2 -fsanitize=undefined verify.c -o verify
+          ./verify
+          cc -std=c11 -Wall -Wextra -Werror -O2 -fsanitize=undefined verify_witness.c -o verify_witness
+          ./verify_witness
+          printf '%s\n' '6efbbf221d5b357153426ab13d1091bae7762b97f6edd17e6c8509e0e4ec5498  receipt-loom.wav' 'ccecfffdfb46d195c7c1c2c3e9b1dcd9b187f68092d093cc122d883dba86bd67  receipt-witness.wav' | sha256sum -c -
+      - name: Fetch pinned Dinghy read-only
+        run: |
+          set -eu
+          git init -q "$RUNNER_TEMP/dinghy"
+          git -C "$RUNNER_TEMP/dinghy" remote add origin https://github.com/zvenson/dinghy.git
+          git -C "$RUNNER_TEMP/dinghy" fetch --depth=1 origin 92f17b28f2d05f2f78fd1b160b58475d518902c8
+          git -C "$RUNNER_TEMP/dinghy" checkout --detach FETCH_HEAD
+      - name: Target compile and link (no package)
+        working-directory: experiments/receipt-loom-003
+        run: |
+          set -eu
+          curl -fL --retry 1 --max-time 90 -o "$RUNNER_TEMP/pi32v2.tar.xz" https://github.com/jvitkauskas/pi32v2-llvm/releases/download/pi32v2-23.1.5-2/pi32v2-llvm-23.1.5-2-linux-x64.tar.xz
+          sh qualify_target.sh "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/receipt-objects"
+          sh qualify_link.sh "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/receipt-objects"
+      - name: Independent rebuild and inherited strict static screen
+        working-directory: experiments/receipt-loom-003
+        run: |
+          set -eu
+          sh qualify_target.sh "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/receipt-repeat"
+          sh qualify_link.sh "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/receipt-repeat"
+          mkdir "$RUNNER_TEMP/audit-toolchain"
+          tar -xJf "$RUNNER_TEMP/pi32v2.tar.xz" -C "$RUNNER_TEMP/audit-toolchain" --strip-components=1
+          python3 audit_elf.py "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/audit-toolchain/bin" "$RUNNER_TEMP/receipt-objects" "$RUNNER_TEMP/receipt-repeat"
+# No binary publication, flash package, release or hardware access.
