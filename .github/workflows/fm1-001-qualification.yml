@@ -132,6 +132,8 @@ jobs:
           cc -std=c11 -Wall -Wextra -Werror -O2 -fsanitize=undefined mode_reference.c -o "$MODE/reference"
           (cd "$MODE" && ./reference)
           python3 mode_receipt.py "$MODE"
+          python3 capture_witness.py "$MODE"
+          python3 test_capture_witness.py "$MODE"
           for part in puya uc25hq80; do
             mkdir "$MODE/$part"
             for mode in aligned staggered fixed moving; do
@@ -139,6 +141,7 @@ jobs:
             done
             echo "four-mode fingerprint part=$part"
             python3 mode_receipt.py "$MODE/$part"
+            python3 capture_witness.py "$MODE/$part"
           done
           rm -rf "$MODE"
 # No combined binary, package, WAV or upstream asset is uploaded/published.
