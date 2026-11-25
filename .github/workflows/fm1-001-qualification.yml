@@ -106,11 +106,14 @@ jobs:
             "$TC/llvm-readelf" -s "$ELF/baseline.elf" | grep -E 'fm1_cstart' || true
             "$TC/llvm-objdump" -d --start-address=0x02002240 --stop-address=0x02002278 "$ELF/baseline.elf" || true
           fi
+          PCM="$RUNNER_TEMP/fm1-candidate-pcm"
+          mkdir "$PCM"
+          python3 pcm_receipt.py --selftest
           failed=0
           for app in baseline candidate; do
             sha256sum "$ELF/$app.elf"
             for part in puya uc25hq80; do
-              if timeout 45s "$D/target/release/strict_smoke" "$ELF/$app.elf" "$part" 200000000; then
+              if FM1_PCM_CAPTURE_PREFIX="$PCM/$part" timeout 45s "$D/target/release/strict_smoke" "$ELF/$app.elf" "$part" 200000000; then
                 echo "case=$app/$part passed modeled peripheral progress diagnostic"
               else
                 rc=$?
@@ -119,5 +122,8 @@ jobs:
               fi
             done
           done
-          exit "$failed"
+          test "$failed" = 0
+          FM1_PCM_CAPTURE_PREFIX="$PCM/puya-repeat" timeout 45s "$D/target/release/strict_smoke" "$ELF/candidate.elf" puya 200000000
+          python3 pcm_receipt.py "$PCM/puya" "$PCM/uc25hq80" "$PCM/puya-repeat"
+          rm -rf "$PCM"
 # No combined binary, package, WAV or upstream asset is uploaded/published.
