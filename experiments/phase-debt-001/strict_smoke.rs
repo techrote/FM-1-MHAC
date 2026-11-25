@@ -109,6 +109,19 @@ fn run(path: &str, part: FlashPart, budget: u32) -> R<()> {
     let mut result=Ok(());
     let mut requested=0u32;
     let candidate=path.ends_with("candidate.elf");
+    // Optional four-mode panel experiment; old smoke path is unchanged.
+    let panel_mode=env::var("FM1_PANEL_MODE").ok();
+    let mode_steps=match panel_mode.as_deref() {
+        None => 0,
+        Some("aligned") => 3,
+        Some("staggered") => 0,
+        Some("fixed") => 1,
+        Some("moving") => 2,
+        _ => return Err("unknown panel experiment mode".into()),
+    };
+    need(candidate || panel_mode.is_none(),"panel mode requires candidate")?;
+    let setup_ms=140u64*(1+mode_steps)+100;
+    let play_ms=if panel_mode.is_some() {2050} else {300};
     let mut phase=0u8;
     let mut since=0u64;
     let mut audio_index=0usize;
@@ -136,13 +149,32 @@ fn run(path: &str, part: FlashPart, budget: u32) -> R<()> {
             need(len>audio_index,"DMA did not advance after peripheral readiness")?;
             if !candidate {phase=5;break}
             need(peak(&m.soc.periph.audio)==0,"candidate boot PCM was not silent")?;
+            if panel_mode.is_some() {
+                // N3 maps to note index 3; (3*64+13)/26=7.
+                // SEL in Dinghy is button 3, SCL in the emulator key map.
+                schedule_key(&mut m,"N3",now)?;
+                for j in 0..mode_steps {
+                    schedule_key(&mut m,"SCL",now+140*(j+1))?;
+                }
+                println!("density-7 panel setup mode={panel_mode:?} select_presses={mode_steps}");
+                phase=6; since=now;
+            } else {
+                schedule_key(&mut m,"PLAY",now)?;
+                phase=2; since=now; audio_index=len; bounds[0]=len;
+            }
+        } else if phase==6 && now-since>=setup_ms {
+            need(peak(&m.soc.periph.audio)==0,"panel setup was not silent")?;
             schedule_key(&mut m,"PLAY",now)?;
             phase=2; since=now; audio_index=len; bounds[0]=len;
-        } else if phase==2 && now-since>=300 {
+        } else if phase==2 && now-since>=play_ms {
             need(len>audio_index,"DMA did not advance during PLAY")?;
             let pk=peak(&m.soc.periph.audio[audio_index..]);
             println!("play window samples={} peak={pk}",len-audio_index);
-            need(pk>0,"PLAY produced no PCM activity")?;
+            if panel_mode.as_deref()==Some("moving") {
+                need(pk==0,"moving-loss activity at density seven")?;
+            } else {
+                need(pk>0,"PLAY produced no PCM activity")?;
+            }
             need(pk<=6400,"candidate PCM exceeds core bound")?;
             bounds[1]=len;
             schedule_key(&mut m,"HOME",now)?;
@@ -158,7 +190,7 @@ fn run(path: &str, part: FlashPart, budget: u32) -> R<()> {
             bounds[3]=len;
             phase=5;break
         }
-        if now>=1800 {break}
+        if now>=if panel_mode.is_some() {4300} else {1800} {break}
     }
     if result.is_ok() && phase!=5 {result=Err(format!("progress horizon exhausted phase={phase}"));}
     println!("phase={phase} cpu0_retired_since_reset={} resets={} core1_retired={:?}",
@@ -192,7 +224,7 @@ fn main() {
     if a.len()!=4 {eprintln!("usage: strict_smoke ELF FLASH_PART STEP_BUDGET");std::process::exit(2)}
     let part=FlashPart::parse(&a[2]).expect("known flash part");
     let budget:u32=a[3].parse().expect("integer budget");
-    assert!((1..=250_000_000).contains(&budget));
+    assert!((1..=500_000_000).contains(&budget));
     if let Err(e)=run(&a[1],part,budget) {eprintln!("SMOKE HOLD: {e}");std::process::exit(1)}
     println!("PERIPHERAL PROGRESS diagnostic passed; bare-image model only, not package boot or physical audition");
 }

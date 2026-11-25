@@ -126,4 +126,19 @@ jobs:
           FM1_PCM_CAPTURE_PREFIX="$PCM/puya-repeat" timeout 45s "$D/target/release/strict_smoke" "$ELF/candidate.elf" puya 200000000
           python3 pcm_receipt.py "$PCM/puya" "$PCM/uc25hq80" "$PCM/puya-repeat"
           rm -rf "$PCM"
+          # Native positive and negative control first, then actual modeled panel.
+          MODE="$RUNNER_TEMP/fm1-mode-receipts"
+          mkdir "$MODE"
+          cc -std=c11 -Wall -Wextra -Werror -O2 -fsanitize=undefined mode_reference.c -o "$MODE/reference"
+          (cd "$MODE" && ./reference)
+          python3 mode_receipt.py "$MODE"
+          for part in puya uc25hq80; do
+            mkdir "$MODE/$part"
+            for mode in aligned staggered fixed moving; do
+              FM1_PANEL_MODE="$mode" FM1_PCM_CAPTURE_PREFIX="$MODE/$part/$mode" timeout 45s "$D/target/release/strict_smoke" "$ELF/candidate.elf" "$part" 500000000
+            done
+            echo "four-mode fingerprint part=$part"
+            python3 mode_receipt.py "$MODE/$part"
+          done
+          rm -rf "$MODE"
 # No combined binary, package, WAV or upstream asset is uploaded/published.
