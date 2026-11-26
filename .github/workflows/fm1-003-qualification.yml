@@ -13,7 +13,7 @@ jobs:
   qualify:
     if: github.head_ref == 'fm1/005-scope-weave' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Checkout exact public PR merge revision
         run: |
@@ -43,6 +43,19 @@ jobs:
           cat "$RUNNER_TEMP/inverse-gcc.txt"
           grep -Fx 'native atlas+phrases sha256 5c7512256a5d91ac6ed00a30059174691461e5d31e4964fd13533dfbd23867f6' "$RUNNER_TEMP/inverse-gcc.txt"
           python3 panel_inverse.py
+      - name: Native contextual panel and receiver inverse
+        working-directory: experiments/scope-weave-005
+        run: |
+          set -eu
+          for c in gcc clang; do
+            "$c" -std=c11 -O2 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all -DCP_TEST context_panel.c -o "$RUNNER_TEMP/context-$c"
+            "$RUNNER_TEMP/context-$c" "$RUNNER_TEMP/context-$c.pcm"
+            python3 context_inverse.py "$c" "$RUNNER_TEMP/context-$c.pcm" > "$RUNNER_TEMP/context-$c.txt"
+          done
+          cmp "$RUNNER_TEMP/context-gcc.pcm" "$RUNNER_TEMP/context-clang.pcm"
+          cmp "$RUNNER_TEMP/context-gcc.txt" "$RUNNER_TEMP/context-clang.txt"
+          cat "$RUNNER_TEMP/context-gcc.txt"
+          printf '%s\n' '6b0f12a7de94a7b5c4d75deaa625baf088ead075c7320b484f1aeb413d416d25  context-gcc.pcm' | (cd "$RUNNER_TEMP" && sha256sum -c -)
       - name: Fetch pinned Dinghy and toolchain
         run: |
           set -eu
@@ -127,4 +140,30 @@ jobs:
           fi
           rm -rf "$P"
           test "$failed" = 0
+      - name: Contextual panel target link and unchanged static audit
+        if: ${{ !cancelled() && steps.link.outcome == 'success' }}
+        working-directory: experiments/scope-weave-005
+        run: |
+          set -eu
+          V="$RUNNER_TEMP/context-variant"
+          mkdir "$V"
+          cp qualify_target.sh qualify_link.sh target_probe.c audit_elf.py scope_weave.h "$V/"
+          # Expand only our local include so the existing audited unity-build
+          # harness can compile both source files without changing its contract.
+          python3 - "$V" <<'PY'
+          import sys
+          from pathlib import Path
+          p=Path("context_panel.c").read_text()
+          inc='#include "scope_context.c"'
+          assert p.count(inc)==1
+          (Path(sys.argv[1])/"app.c").write_text(p.replace(inc,Path("scope_context.c").read_text()))
+          PY
+          sha256sum "$V/app.c"
+          for variant in context-objects context-repeat; do
+            sh "$V/qualify_target.sh" "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/$variant"
+            sh "$V/qualify_link.sh" "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/$variant"
+          done
+          mkdir "$RUNNER_TEMP/context-audit-toolchain"
+          tar -xJf "$RUNNER_TEMP/pi32v2.tar.xz" -C "$RUNNER_TEMP/context-audit-toolchain" --strip-components=1
+          python3 "$V/audit_elf.py" "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/context-audit-toolchain/bin" "$RUNNER_TEMP/context-objects" "$RUNNER_TEMP/context-repeat"
 # No package, no binary publication or physical device access.
