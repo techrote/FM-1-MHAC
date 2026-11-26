@@ -45,6 +45,27 @@ function equal(a,b){return a.length===b.length&&a.every((x,i)=>x===b[i])}
 
 function occurrences(hay,needle){const out=[];for(let i=0;i+needle.length<=hay.length;i++){if(needle.every((x,j)=>hay[i+j]===x))out.push(i)}return out}
 
+// Narrow observed type-8 RELA case only. Do not infer general pi32 relocation semantics.
+// The linked word must equal the mapped input symbol address independently of
+// the existing hard-coded linked-word screen; every destination must be outside
+// the complete table and inside the same mapped executable contribution.
+function verifyTableDestinations(t,rel,targets,size){
+  const names=[".LBB12_24",".LBB12_21",".LBB12_25",".LBB12_22",".LBB12_23"];
+  need(t.offset>=0&&t.offset+size<=t.section.size&&t.row.size===t.section.size,"table contribution bounds");
+  return targets.map((target,i)=>{
+    const rr=rel.filter(r=>r.at===t.offset+4*i);
+    need(rr.length===1,"ambiguous table relocation");
+    const r=rr[0],s=r.symbol;
+    need(r.type===8&&r.addend===0,"unqualified relocation type or addend");
+    need(s.name===names[i]&&s.section===t.section.i,"unexpected relocation symbol or input section");
+    need(Number.isInteger(s.value)&&s.value>=0&&s.value+2<=t.section.size&&s.value%2===0,"invalid input symbol offset");
+    need(s.value<t.offset||s.value>=t.offset+size,"relocation targets embedded table");
+    const mapped=t.row.addr+s.value;
+    need(mapped===target,"mapped symbol address differs from linked word");
+    return {word:i,symbol:s.name,input_offset:s.value,linked_word:target,mapped_symbol_address:mapped};
+  });
+}
+
 function inspect(kind,obj,linked,rows){
   need(obj.type===1&&linked.type===2&&obj.machine===241&&linked.machine===241,"target identity");
   const text=linked.sections.filter(s=>s.name===".text");need(text.length===1&&(text[0].flags&6)===6,"linked text");
@@ -64,8 +85,8 @@ function inspect(kind,obj,linked,rows){
     const dv=new DataView(final.buffer,final.byteOffset,final.byteLength);
     need(targets.every((x,i)=>dv.getUint32(i*4,true)===x),"linked table target mismatch");
     need(rel.length===5&&[0,4,8,12,16].every(o=>rel.filter(r=>r.at-t.offset===o).length===1),"missing or ambiguous per-word relocation");
-    // This establishes placement of relocation sites; no pi32 relocation type semantics assumed.
-    report.disposition="five direct-object relocation sites correspond to linked table words; control flow HOLD";
+    report.destination_binding=verifyTableDestinations(t,rel,targets,size);
+    report.disposition="five linked words match independently mapped local symbols; control flow HOLD";
     const literal=take(0x200c9d8,14);
     need(equal(literal,[85,78,75,78,79,87,78,32,70,76,65,83,72,0]),"linked literal mismatch");
     report.literal_nonexec_input_matches=obj.sections.filter(s=>s.type===1&&(s.flags&2)&&!(s.flags&4)).flatMap(s=>occurrences(obj.bytes(s),literal).map(offset=>({section:s.name,offset,flags:s.flags})));
@@ -107,12 +128,25 @@ function selftest(){
   const a=0x2001394,arr=new Uint8Array(0xc9d8-0x1394+16),dv=new DataView(arr.buffer),t=0x20014b4-a;
   [0x2001394,0x20014c8,0x20013c8,0x20014cc,0x20014d0].forEach((x,i)=>dv.setUint32(t+4*i,x,true));
   const lit=Uint8Array.from([85,78,75,78,79,87,78,32,70,76,65,83,72,0]);arr.set(lit,0x200c9d8-a);
-  const os={name:".text.f",size:20,flags:6,i:1,type:1},rs={name:".rodata.str",size:14,flags:2,i:2,type:1},ls={name:".text",addr:a,size:arr.length,flags:6};
-  const rel=Array.from({length:5},(_,i)=>({at:i*4,type:1,symbol:{name:"s",section:1,value:i*2},addend:0}));
-  const co={type:1,machine:241,sections:[os,rs],bytes:s=>s===os?new Uint8Array(20):lit,relocs:()=>rel},cl={type:2,machine:241,sections:[ls],bytes:()=>arr},cm=[{addr:0x20014b4,size:20,section:os.name}];
+  const os={name:".text.f",size:792,flags:6,i:1,type:1},rs={name:".rodata.str",size:14,flags:2,i:2,type:1},ls={name:".text",addr:a,size:arr.length,flags:6};
+  const rel=[376,684,428,688,692].map((value,i)=>({at:664+i*4,type:8,symbol:{name:[".LBB12_24",".LBB12_21",".LBB12_25",".LBB12_22",".LBB12_23"][i],section:1,value},addend:0}));
+  const co={type:1,machine:241,sections:[os,rs],bytes:s=>s===os?new Uint8Array(792):lit,relocs:()=>rel},cl={type:2,machine:241,sections:[ls],bytes:()=>arr},cm=[{addr:0x20014b4-664,size:792,section:os.name}];
   need(inspect("scope",co,cl,cm).literal_nonexec_input_matches.length===1,"candidate contract");n++;
   reject(()=>inspect("scope",{...co,relocs:()=>rel.slice(1)},cl,cm));
   reject(()=>inspect("scope",{...co,sections:[os,{...rs,flags:6}]},cl,cm));
+  const mappedTable=contribution(cm,co.sections,0x20014b4,20);
+  const targets=[0x2001394,0x20014c8,0x20013c8,0x20014cc,0x20014d0];
+  need(verifyTableDestinations(mappedTable,rel,targets,20).length===5,"symbol destination binding");n++;
+  const mutate=(patch)=>rel.map((r,i)=>i===0?{...r,...patch}:r);
+  reject(()=>verifyTableDestinations(mappedTable,mutate({type:9}),targets,20));
+  reject(()=>verifyTableDestinations(mappedTable,mutate({addend:2}),targets,20));
+  reject(()=>verifyTableDestinations(mappedTable,mutate({symbol:{...rel[0].symbol,section:2}}),targets,20));
+  reject(()=>verifyTableDestinations(mappedTable,mutate({symbol:{...rel[0].symbol,value:378}}),targets,20));
+  reject(()=>verifyTableDestinations(mappedTable,mutate({symbol:{...rel[0].symbol,value:664}}),targets,20));
+  reject(()=>verifyTableDestinations(mappedTable,mutate({symbol:{...rel[0].symbol,value:792}}),targets,20));
+  reject(()=>verifyTableDestinations(mappedTable,mutate({symbol:{...rel[0].symbol,name:".LBB12_99"}}),targets,20));
+  reject(()=>verifyTableDestinations(mappedTable,mutate({symbol:{...rel[0].symbol,value:377}}),targets,20));
+  reject(()=>verifyTableDestinations(mappedTable,rel,[targets[0]+2,...targets.slice(1)],20));
   return n;
 }
 console.log("direct_object_selftest="+selftest()+" PASS (synthetic)");
