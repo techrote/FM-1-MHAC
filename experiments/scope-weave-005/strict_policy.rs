@@ -200,7 +200,8 @@ fn run(path: &str, part: FlashPart, budget: u32) -> R<()> {
         m.cpu.pc,m.soc.periph.cycles,m.soc.periph.ms(),m.soc.periph.audio_halves,a.len(),peak,
         m.soc.lcd.frames,m.soc.lcd.display_on,m.soc.unknown_accesses().len(),m.soc.dbg_cause,
         m.soc.emu_cause,m.soc.cpu1_fault,m.changed_sectors().len());
-    for u in m.soc.unknown_accesses().iter().take(12) {println!("unknown_mmio {u:?}")}
+    // Complete upstream unknown_log; no first-twelve truncation.
+    for u in m.soc.unknown_accesses() {println!("unknown_mmio {u:?}")}
     // Capture original candidate PCM only, inside disposable runner storage.
     // No combined binary, stock audio or emulator WAV is published.
     need(m.changed_sectors().is_empty(),"modeled flash sectors changed")?;

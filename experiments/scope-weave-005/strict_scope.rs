@@ -110,7 +110,9 @@ fn run(path: &str, part: FlashPart, budget: u32) -> R<()> {
     let mut requested=0u32;
     let candidate=path.ends_with("candidate.elf");
     // Each run starts a fresh modeled device; mode 0 is the boot default.
+    let boot_only=env::var("FM1_MMIO_BOOT_ONLY").as_deref()==Ok("1");
     let panel_mode=env::var("FM1_PANEL_MODE").ok();
+    need(!boot_only || panel_mode.is_none(),"boot-only cannot select panel mode")?;
     let mode_steps=match panel_mode.as_deref() {
         None => 0u64,
         Some(v) => v.parse::<u64>().map_err(|_| "invalid mode")?,
@@ -146,7 +148,10 @@ fn run(path: &str, part: FlashPart, budget: u32) -> R<()> {
         }
         if phase==1 && now-since>=100 {
             need(len>audio_index,"DMA did not advance after peripheral readiness")?;
-            if !candidate {phase=5;break}
+            if !candidate || boot_only {
+                if candidate {need(peak(&m.soc.periph.audio)==0,"candidate boot PCM was not silent")?;}
+                phase=5;break
+            }
             need(peak(&m.soc.periph.audio)==0,"candidate boot PCM was not silent")?;
             if panel_mode.is_some() {
                 // Note key selects expression; default rate remains 12. SEL is SCL.
@@ -195,11 +200,12 @@ fn run(path: &str, part: FlashPart, budget: u32) -> R<()> {
         m.cpu.pc,m.soc.periph.cycles,m.soc.periph.ms(),m.soc.periph.audio_halves,a.len(),peak,
         m.soc.lcd.frames,m.soc.lcd.display_on,m.soc.unknown_accesses().len(),m.soc.dbg_cause,
         m.soc.emu_cause,m.soc.cpu1_fault,m.changed_sectors().len());
-    for u in m.soc.unknown_accesses().iter().take(12) {println!("unknown_mmio {u:?}")}
+    // Complete upstream unknown_log; no first-twelve truncation.
+    for u in m.soc.unknown_accesses() {println!("unknown_mmio {u:?}")}
     // Capture original candidate PCM only, inside disposable runner storage.
     // No combined binary, stock audio or emulator WAV is published.
     need(m.changed_sectors().is_empty(),"modeled flash sectors changed")?;
-    if candidate && result.is_ok() {
+    if candidate && !boot_only && result.is_ok() {
         if let Some(prefix)=env::var_os("FM1_PCM_CAPTURE_PREFIX") {
             use std::io::Write;
             let prefix=std::path::PathBuf::from(prefix);

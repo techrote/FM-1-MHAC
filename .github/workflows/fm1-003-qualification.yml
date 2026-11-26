@@ -322,4 +322,31 @@ jobs:
             node inspect_elf_evidence.mjs baseline "$RUNNER_TEMP/$d/baseline.elf" "$RUNNER_TEMP/audit-toolchain/bin/llvm-objdump"
             node inspect_elf_evidence.mjs scope "$RUNNER_TEMP/$d/candidate.elf" "$RUNNER_TEMP/audit-toolchain/bin/llvm-objdump"
           done
+      - name: Complete MMIO census at matched peripheral-readiness endpoint
+        if: ${{ !cancelled() && steps.policy_link.outcome == 'success' }}
+        working-directory: experiments/scope-weave-005
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          node mmio_census.mjs --selftest
+          D="$RUNNER_TEMP/scope-strict"
+          EMU="$RUNNER_TEMP/fm1-emu"
+          test "$(git -C "$EMU" rev-parse HEAD)" = 736aded65c8e2e9d652cf595fca248734483a877
+          cp strict_scope.rs "$D/src/main.rs"
+          rustup run 1.95.0 cargo test --offline --locked --manifest-path "$D/Cargo.toml"
+          rustup run 1.95.0 cargo build --release --offline --locked --manifest-path "$D/Cargo.toml"
+          test -z "$(git -C "$EMU" status --porcelain)"
+          P="$RUNNER_TEMP/mmio-boot"
+          mkdir "$P"
+          for part in puya uc25hq80; do
+            for variant in baseline scope context policy; do
+              case "$variant" in
+                baseline) ELF="$RUNNER_TEMP/scope-objects/baseline.elf";;
+                *) ELF="$RUNNER_TEMP/$variant-objects/candidate.elf";;
+              esac
+              sha256sum "$ELF"
+              FM1_MMIO_BOOT_ONLY=1 timeout 45s "$D/target/release/strict_scope" "$ELF" "$part" 800000000 | tee "$P/$part-$variant.log"
+            done
+          done
+          node mmio_census.mjs "$P"
 # No package, no binary publication or physical device access.
