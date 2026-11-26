@@ -28,6 +28,52 @@ def cmd(*args):
     return subprocess.check_output([str(a) for a in args], text=True)
 
 
+def triage_unknown(dis, unknown):
+    """Diagnostic only; never remove a line from the original HOLD screen."""
+    lines = dis.splitlines()
+    for row in unknown:
+        index = lines.index(row)
+        match = re.match(r"^\s*([0-9a-fA-F]+):\s+((?:[0-9a-fA-F]{2} )*[0-9a-fA-F]{2})(?:[ \t]{2,}|\t)(.*)$", row)
+        kind = "unclassified-original-hit"
+        address = int(row.split(":", 1)[0].strip(), 16)
+        raw = b""
+        payload = ""
+        if match:
+            raw = bytes.fromhex(match[2])
+            payload = match[3].strip()
+            if payload == "<unknown>":
+                kind = "explicit-decoder-marker"
+            elif raw and all(32 <= b <= 126 for b in raw) and raw.decode("ascii").strip() == payload:
+                kind = "literal-printable-byte-rendering"
+        # Find textual mentions only, not verified control-flow edges.
+        target = re.compile(r"(?<![0-9a-fA-F])(?:0x)?0*" + format(address, "x") + r"(?![0-9a-fA-F])", re.I)
+        refs = [line for line in lines if line != row and target.search(line.split(":", 1)[-1])]
+        yield {"address": hex(address), "kind": kind, "raw_hex": raw.hex(),
+               "payload": payload, "original_row": row,
+               "neighborhood": lines[max(0, index-10):index+11],
+               "textual_mentions": refs[:12], "textual_mention_count": len(refs),
+               "disposition": "HOLD-unresolved; no reachability conclusion"}
+
+
+def triage_selftest():
+    rows = [" 200225a: 03 9d        \t<unknown>",
+            " 200225e: 2d 00        \t<unknown>",
+            " 20014b8: c8 14        \t<unknown>",
+            " 200c9d8: 55 4e 4b 4e 4f 57 4e 20         UNKNOWN ",
+            " 2002260: 00 00        \tcall UNKNOWN",
+            " 2002262: 00 00        \tUNKNOWN",
+            " 2002264: malformed UNKNOWN"]
+    dis = "\n".join(["020018f4 <fm1_cstart>:", " 2002258: 00 00        \tgoto 0x200225a", *rows])
+    reports = list(triage_unknown(dis, rows))
+    expected = ["explicit-decoder-marker"]*3 + ["literal-printable-byte-rendering"] + ["unclassified-original-hit"]*3
+    assert [r["kind"] for r in reports] == expected
+    assert [r["original_row"] for r in reports] == rows
+    assert reports[0]["textual_mention_count"] == 1
+    assert reports[3]["raw_hex"] == "554e4b4e4f574e20"
+    assert all(r["disposition"].startswith("HOLD") for r in reports)
+    print("audit_triage_selftest=PASS (7 original hits preserved)", flush=True)
+
+
 def audit(path, tc):
     blob = path.read_bytes()
     require(blob[:7] == b"\x7fELF\x01\x01\x01", "not little-endian ELF32")
@@ -92,6 +138,8 @@ def audit(path, tc):
     il, rl = instructions(dis), instructions(rt)
     require(il and rl, "disassembler returned no instruction lines")
     unknown = [ln for ln in il if re.search(r"<unknown>|\bunknown\b", ln, re.I)]
+    for diagnostic in triage_unknown(dis, unknown):
+        print("audit_triage " + json.dumps(diagnostic, sort_keys=True), flush=True)
     calls = [ln for ln in rl if re.search(r"\bcall\w*\b", ln, re.I)]
     rom = [ln for ln in il if re.search(r"\b(?:0x)?ffc[0-9a-f]{5}\b", ln, re.I)]
     # Keep exact decode failures, with symbol context, rather than suppressing
@@ -117,6 +165,7 @@ def audit(path, tc):
 
 
 def main():
+    triage_selftest()
     up, tc, first, second = map(lambda p: Path(p).resolve(), sys.argv[1:])
     require(cmd("git", "-C", up, "rev-parse", "HEAD").strip() == PIN, "wrong upstream")
     require(not cmd("git", "-C", up, "status", "--porcelain").strip(), "dirty upstream")
