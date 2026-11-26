@@ -380,4 +380,11 @@ jobs:
             done
           done
           test -z "$(git -C "$EMU" status --porcelain)"
+      - name: Compiler assembly round-trip evidence (original HOLD preserved)
+        if: ${{ !cancelled() && steps.link.outcome == 'success' }}
+        working-directory: experiments/scope-weave-005
+        timeout-minutes: 4
+        run: |
+          set -eu
+          python3 compiler_evidence.py "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/scope-objects" "$RUNNER_TEMP/scope-repeat"
 # No package, no binary publication or physical device access.
