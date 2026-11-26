@@ -175,6 +175,51 @@ def selftest():
     print('compiler_evidence_selftest=10/10 PASS (synthetic)')
 
 
+def relaxation_probe(clang, lld, target, flags, src, root, kind, asm,
+                     link_args, direct_obj, direct_elf, source='firmware/src/dinghy.c'):
+    """Targeted falsifier: driver optimization/relaxation and saved-temp routes.
+
+    Diagnostic builds only. Neither a match nor a mismatch waives the original
+    full-hash gate. Keep generated assembly, objects and errors inside runner.
+    """
+    cases = [
+        ('assembler-os', [*target, '-Os', '-x', 'assembler', '-c', asm]),
+        ('assembler-relax-all', [*target, '-mrelax-all', '-x', 'assembler', '-c', asm]),
+        ('assembler-no-relax-all', [*target, '-mno-relax-all', '-x', 'assembler', '-c', asm]),
+        ('direct-relax-all', [*flags, '-mrelax-all', '-c', source]),
+        ('direct-no-relax-all', [*flags, '-mno-relax-all', '-c', source]),
+        ('driver-save-temps', [*flags, '-save-temps=obj', '-c', source]),
+    ]
+    reference_obj, reference_elf = direct_obj.read_bytes(), direct_elf.read_bytes()
+    reports = []
+    for name, args in cases:
+        obj, elf = (root / (kind + '-' + name + suffix) for suffix in ('.o', '.elf'))
+        report = {'variant': kind, 'route': name}
+        for stage, command in (
+                ('compile', [clang, *args, '-o', obj]),
+                ('link', [lld, *link_args, obj, '-o', elf])):
+            p = subprocess.run([str(x) for x in command], cwd=src,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=40)
+            report[stage + '_exit'] = p.returncode
+            if p.returncode:
+                report['failed_stage'] = stage
+                report['stderr_sha256'] = hashlib.sha256(p.stderr).hexdigest()
+                report['option_rejected'] = bool(re.search(
+                    rb'(unknown|unsupported|unrecognized) (argument|option)', p.stderr, re.I))
+                break
+        else:
+            od = elf_delta(reference_obj, obj.read_bytes())
+            ed = elf_delta(reference_elf, elf.read_bytes())
+            report.update(object_exact=od['exact'], elf_exact=ed['exact'],
+                          load_segments_equal=ed['load_segments_equal'],
+                          changed_object_sections=len(od['section_changes']),
+                          changed_elf_sections=len(ed['section_changes']),
+                          object_sha256=digest(obj), elf_sha256=digest(elf))
+        print('compiler_route ' + json.dumps(report, sort_keys=True), flush=True)
+        reports.append(report)
+    return reports
+
+
 def run(up, archive, original, repeat):
     here = Path(__file__).resolve().parent
     up, archive, original, repeat = map(lambda x: Path(x).resolve(), (up, archive, original, repeat))
@@ -232,6 +277,9 @@ def run(up, archive, original, repeat):
                           disposition='HOLD: local compiler evidence only; no complete control-flow proof')
             print('compiler_evidence ' + json.dumps(result, sort_keys=True), flush=True)
             results.append(result)
+            relaxation_probe(clang, lld, target, flags, src, root, kind, asm,
+                             ['--gc-sections', '-e', '_start', '-T', 'firmware/app.ld', *startup],
+                             direct_obj, direct_elf)
     need(all(x['exact_elf_match'] and x['local_structure_observed'] for x in results),
          'compiler round-trip or local structure not established; retain HOLD')
     print('compiler_roundtrip_local_structure=PASS; inherited audit unchanged')
