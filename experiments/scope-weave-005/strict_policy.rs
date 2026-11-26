@@ -120,8 +120,9 @@ fn run(path: &str, part: FlashPart, budget: u32) -> R<()> {
     let live_key=env::var("FM1_LIVE_KEY").map_err(|_|"missing FM1_LIVE_KEY")?;
     need(["N8","N9","N26"].contains(&live_key.as_str()),"unexpected live key")?;
     let mut edit_at=None;
+    let mut witness_at=None;
     let setup_ms=140u64*keys.len() as u64+100;
-    let play_ms=3100;
+    let play_ms=4800;
     let mut phase=0u8;
     let mut since=0u64;
     let mut audio_index=0usize;
@@ -163,6 +164,11 @@ fn run(path: &str, part: FlashPart, budget: u32) -> R<()> {
             schedule_key(&mut m,&live_key,now)?;
             edit_at=Some(len);
             println!("live edit key={live_key} ms={now} captured_samples={len}");
+        } else if phase==2 && now-since>=3000 && witness_at.is_none() {
+            need(edit_at.is_some(),"witness before edit")?;
+            schedule_key(&mut m,"SCL",now)?;
+            witness_at=Some(len);
+            println!("late witness key=SCL ms={now} captured_samples={len}");
         } else if phase==2 && now-since>=play_ms {
             need(len>audio_index,"DMA did not advance during PLAY")?;
             let pk=peak(&m.soc.periph.audio[audio_index..]);
@@ -203,6 +209,8 @@ fn run(path: &str, part: FlashPart, budget: u32) -> R<()> {
             use std::io::Write;
             let prefix=std::path::PathBuf::from(prefix);
             let edit=edit_at.ok_or("live edit not scheduled")?;
+            let witness=witness_at.ok_or("late witness not scheduled")?;
+            fs::write(prefix.with_extension("witness"),format!("{witness}\n")).map_err(|e|e.to_string())?;
             fs::write(prefix.with_extension("edit"),format!("{edit}\n")).map_err(|e|e.to_string())?;
             need(bounds[3]==a.len() && a.len()%2==0,"invalid stereo capture")?;
             let mut f=fs::File::create(prefix.with_extension("pcm")).map_err(|e|e.to_string())?;
