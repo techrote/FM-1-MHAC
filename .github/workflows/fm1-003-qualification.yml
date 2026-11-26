@@ -89,6 +89,35 @@ jobs:
           mkdir "$RUNNER_TEMP/audit-toolchain"
           tar -xJf "$RUNNER_TEMP/pi32v2.tar.xz" -C "$RUNNER_TEMP/audit-toolchain" --strip-components=1
           python3 audit_elf.py "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/audit-toolchain/bin" "$RUNNER_TEMP/scope-objects" "$RUNNER_TEMP/scope-repeat"
+      - name: Direct object provenance and map-enabled exact relink (HOLD preserved)
+        if: ${{ !cancelled() && steps.link.outcome == 'success' }}
+        working-directory: experiments/scope-weave-005
+        timeout-minutes: 3
+        run: |
+          set -eu
+          node direct_object.mjs --selftest
+          D="$RUNNER_TEMP/scope-direct-map"
+          mkdir "$D"
+          cp "$RUNNER_TEMP/scope-objects/baseline.o" "$RUNNER_TEMP/scope-objects/candidate.o" "$D/"
+          # Only add a map output to a disposable copy of the existing pinned linker script.
+          python3 - "$D/link.sh" <<'PY'
+          import sys
+          from pathlib import Path
+          source=Path("qualify_link.sh").read_text()
+          old='-o "$OUT/$n.elf"'
+          assert source.count(old)==1
+          Path(sys.argv[1]).write_text(source.replace(old,'-Map="$OUT/$n.map" '+old))
+          PY
+          sh "$D/link.sh" "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$D"
+          failed=0
+          for n in baseline candidate; do
+            kind="$n"
+            if test "$n" = candidate; then kind=scope; fi
+            if ! node direct_object.mjs "$kind" "$D/$n.o" "$RUNNER_TEMP/scope-objects/$n.elf" "$D/$n.elf" "$D/$n.map"; then
+              failed=1
+            fi
+          done
+          test "$failed" = 0
       - name: Scope Weave strict modeled panel and acoustic inverse
         if: ${{ !cancelled() && steps.link.outcome == 'success' }}
         working-directory: experiments/scope-weave-005
