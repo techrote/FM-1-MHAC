@@ -1,0 +1,197 @@
+name: FM1-002 isolated host and target ELF qualification
+on:
+  pull_request:
+    paths:
+      - 'experiments/receipt-loom-003/**'
+      - '.github/workflows/fm1-002-qualification.yml'
+permissions:
+  contents: read
+concurrency:
+  group: fm1-002-qualification
+  cancel-in-progress: true
+jobs:
+  qualify:
+    if: github.head_ref == 'fm1/003-receipt-loom' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact public PR merge revision
+        run: |
+          set -eu
+          git init -q
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git fetch --depth=1 origin "$GITHUB_REF"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Native legacy and tagged witness
+        working-directory: experiments/receipt-loom-003
+        run: |
+          set -eu
+          cc -std=c11 -Wall -Wextra -Werror -O2 -fsanitize=undefined verify.c -o verify
+          ./verify
+          cc -std=c11 -Wall -Wextra -Werror -O2 -fsanitize=undefined verify_witness.c -o verify_witness
+          ./verify_witness
+          printf '%s\n' '6efbbf221d5b357153426ab13d1091bae7762b97f6edd17e6c8509e0e4ec5498  receipt-loom.wav' 'ccecfffdfb46d195c7c1c2c3e9b1dcd9b187f68092d093cc122d883dba86bd67  receipt-witness.wav' | sha256sum -c -
+      - name: Fetch pinned Dinghy read-only
+        run: |
+          set -eu
+          git init -q "$RUNNER_TEMP/dinghy"
+          git -C "$RUNNER_TEMP/dinghy" remote add origin https://github.com/zvenson/dinghy.git
+          git -C "$RUNNER_TEMP/dinghy" fetch --depth=1 origin 92f17b28f2d05f2f78fd1b160b58475d518902c8
+          git -C "$RUNNER_TEMP/dinghy" checkout --detach FETCH_HEAD
+      - name: Target compile and link (no package)
+        id: link
+        working-directory: experiments/receipt-loom-003
+        run: |
+          set -eu
+          curl -fL --retry 1 --max-time 90 -o "$RUNNER_TEMP/pi32v2.tar.xz" https://github.com/jvitkauskas/pi32v2-llvm/releases/download/pi32v2-23.1.5-2/pi32v2-llvm-23.1.5-2-linux-x64.tar.xz
+          sh qualify_target.sh "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/receipt-objects"
+          sh qualify_link.sh "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/receipt-objects"
+      - name: Independent rebuild and inherited strict static screen
+        working-directory: experiments/receipt-loom-003
+        run: |
+          set -eu
+          sh qualify_target.sh "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/receipt-repeat"
+          sh qualify_link.sh "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/receipt-repeat"
+          mkdir "$RUNNER_TEMP/audit-toolchain"
+          tar -xJf "$RUNNER_TEMP/pi32v2.tar.xz" -C "$RUNNER_TEMP/audit-toolchain" --strip-components=1
+          python3 audit_elf.py "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/audit-toolchain/bin" "$RUNNER_TEMP/receipt-objects" "$RUNNER_TEMP/receipt-repeat"
+
+      - name: Receipt Loom native atlas and strict modeled panel qualification
+        if: ${{ !cancelled() && steps.link.outcome == 'success' }}
+        working-directory: experiments/receipt-loom-003
+        timeout-minutes: 12
+        run: |
+          set -eu
+          P="$RUNNER_TEMP/receipt-pcm"
+          mkdir "$P"
+          cc -std=c11 -Wall -Wextra -Werror -O2 -fsanitize=undefined token_atlas.c -o "$P/atlas"
+          "$P/atlas" > "$P/atlas.pcm"
+          printf '%s\n' '7f4afc4f0749285ace652fadcf049f9a49f165691377ea63fd63ca3e730d5f62  atlas.pcm' | (cd "$P" && sha256sum -c -)
+          cc -std=c11 -Wall -Wextra -Werror -O2 -fsanitize=undefined separation.c -o "$P/separation"
+          "$P/separation" "$P/atlas.pcm" > "$P/separation.txt"
+          cat "$P/separation.txt"
+          grep -Fx 'family=0 pairs=45 certified=45 inconclusive=0' "$P/separation.txt"
+          grep -Fx 'family=1 pairs=3275520 certified=3275520 inconclusive=0' "$P/separation.txt"
+          python3 token_decode.py "$P/atlas.pcm" --selftest
+          cc -std=c11 -Wall -Wextra -Werror -O2 -fsanitize=undefined panel_reference.c -o "$P/reference"
+          for mode in $(seq 0 9); do
+            "$P/reference" "$mode" > "$P/ref-$mode.pcm" 2> "$P/ref-$mode.bounds"
+            python3 token_decode.py "$P/atlas.pcm" "$P/ref-$mode" "$mode"
+          done
+          # Exact legacy alias is intentional. Wrong tagged mode must reject.
+          cmp "$P/ref-0.pcm" "$P/ref-3.pcm"
+          if python3 token_decode.py "$P/atlas.pcm" "$P/ref-5" 8; then
+            echo 'HOLD: wrong tagged mode accepted'; exit 1
+          fi
+          EMU="$RUNNER_TEMP/fm1-emu"
+          PIN=736aded65c8e2e9d652cf595fca248734483a877
+          git init -q "$EMU"
+          git -C "$EMU" remote add origin https://github.com/joakimeriksson/fm1-emu.git
+          git -C "$EMU" fetch --depth=1 origin "$PIN"
+          git -C "$EMU" checkout --detach FETCH_HEAD
+          test "$(git -C "$EMU" rev-parse HEAD)" = "$PIN"
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup run 1.95.0 rustc --version --verbose
+          D="$RUNNER_TEMP/receipt-strict"
+          mkdir -p "$D/src"
+          cp strict_receipt.rs "$D/src/main.rs"
+          cat > "$D/Cargo.toml" <<EOF
+          [package]
+          name = "strict_receipt"
+          version = "0.1.0"
+          edition = "2021"
+          [dependencies]
+          fm1-soc = { path = "$EMU/crates/fm1-soc" }
+          fm1-core = { path = "$EMU/crates/fm1-core" }
+          [workspace]
+          EOF
+          rustup run 1.95.0 cargo generate-lockfile --offline --manifest-path "$D/Cargo.toml"
+          rustup run 1.95.0 cargo test --offline --locked --manifest-path "$D/Cargo.toml"
+          rustup run 1.95.0 cargo build --release --offline --locked --manifest-path "$D/Cargo.toml"
+          test -z "$(git -C "$EMU" status --porcelain)"
+          ELF="$RUNNER_TEMP/receipt-objects/candidate.elf"
+          sha256sum "$ELF"
+          failed=0
+          for part in puya uc25hq80; do
+            if test "$part" = puya; then modes="$(seq 0 9)"; else modes="5 8"; fi
+            for mode in $modes; do
+              prefix="$P/$part-$mode"
+              if FM1_PANEL_MODE="$mode" FM1_PCM_CAPTURE_PREFIX="$prefix" timeout 60s "$D/target/release/strict_receipt" "$ELF" "$part" 800000000; then
+                if python3 token_decode.py "$P/atlas.pcm" "$prefix" "$mode"; then
+                  echo "case=$part/$mode PASS modeled acoustic contract"
+                else
+                  echo "case=$part/$mode HOLD decoder"; failed=1
+                fi
+              else
+                echo "case=$part/$mode HOLD emulator"; failed=1
+              fi
+            done
+          done
+          if test "$failed" = 0; then
+            cmp "$P/puya-5.pcm" "$P/uc25hq80-5.pcm"
+            cmp "$P/puya-8.pcm" "$P/uc25hq80-8.pcm"
+          fi
+          rm -rf "$P"
+          test "$failed" = 0
+
+
+      - name: Redundant Receipt Loom alternative native and target qualification
+        if: ${{ !cancelled() && steps.link.outcome == 'success' }}
+        working-directory: experiments/receipt-loom-003
+        timeout-minutes: 10
+        run: |
+          set -eu
+          P="$RUNNER_TEMP/receipt-redundant"
+          mkdir "$P"
+          cc -std=c11 -Wall -Wextra -Werror -O2 -fsanitize=undefined -fno-sanitize-recover=all redundant_probe.c -o "$P/probe"
+          "$P/probe"
+          "$P/probe" atlas > "$P/atlas.pcm"
+          printf '%s\n' '11f3405d833347260b4e7775e907539674bc63359307d58c6fe191fd951d644e  atlas.pcm' | (cd "$P" && sha256sum -c -)
+          cc -std=c11 -Wall -Wextra -Werror -O2 -fsanitize=undefined -fno-sanitize-recover=all redundant_screen.c -o "$P/screen"
+          "$P/screen" "$P/atlas.pcm"
+          # Work on a scratch copy of our build wrapper, never the pinned upstream.
+          mkdir "$P/src"
+          cp qualify_target.sh qualify_link.sh target_probe.c receipt_loom.h redundant_core.h "$P/src/"
+          cp redundant_app.c "$P/src/app.c"
+          sed -i 's/"receipt_loom.h"/"redundant_core.h"/;s/rl_state/rr_state/;s/rl_render/rr_render/' "$P/src/target_probe.c"
+          sed -i '/cp "$HERE\/receipt_loom.h" firmware\/src\/receipt_loom.h/a cp "$HERE/redundant_core.h" firmware/src/redundant_core.h' "$P/src/qualify_target.sh"
+          sh "$P/src/qualify_target.sh" "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$P/objects"
+          sh "$P/src/qualify_link.sh" "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$P/objects"
+          sha256sum "$P/objects/candidate.elf"
+          python3 redundant_decode.py "$P/atlas.pcm" --selftest
+          cc -std=c11 -Wall -Wextra -Werror -O2 -fsanitize=undefined -fno-sanitize-recover=all redundant_reference.c -o "$P/reference"
+          for mode in $(seq 0 4); do
+            "$P/reference" "$mode" > "$P/ref-$mode.pcm" 2> "$P/ref-$mode.bounds"
+            python3 redundant_decode.py "$P/atlas.pcm" "$P/ref-$mode" "$mode"
+          done
+          if python3 redundant_decode.py "$P/atlas.pcm" "$P/ref-0" 3; then
+            echo 'HOLD: wrong repeated-token mode accepted'; exit 1
+          fi
+          D="$RUNNER_TEMP/receipt-strict"
+          ELF="$P/objects/candidate.elf"
+          test -x "$D/target/release/strict_receipt"
+          failed=0
+          for part in puya uc25hq80; do
+            if test "$part" = puya; then modes="0 1 2 3 4"; else modes="0 3"; fi
+            for mode in $modes; do
+              prefix="$P/$part-$mode"
+              if FM1_PANEL_MODE="$mode" FM1_PCM_CAPTURE_PREFIX="$prefix" timeout 60s "$D/target/release/strict_receipt" "$ELF" "$part" 800000000; then
+                if python3 redundant_decode.py "$P/atlas.pcm" "$prefix" "$mode"; then
+                  echo "redundant case=$part/$mode PASS modeled full and aligned sparse acoustic contract"
+                else
+                  echo "redundant case=$part/$mode HOLD decoder"; failed=1
+                fi
+              else
+                echo "redundant case=$part/$mode HOLD emulator"; failed=1
+              fi
+            done
+          done
+          if test "$failed" = 0; then
+            cmp "$P/puya-0.pcm" "$P/uc25hq80-0.pcm"
+            cmp "$P/puya-3.pcm" "$P/uc25hq80-3.pcm"
+          fi
+          rm -rf "$P"
+          test "$failed" = 0
+
+# No binary publication, flash package, release or hardware access.
