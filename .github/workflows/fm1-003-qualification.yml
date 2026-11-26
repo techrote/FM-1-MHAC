@@ -312,4 +312,14 @@ jobs:
           done
           python3 policy_capture.py "$P/control" "$P/eq" "$P/explicit" "$P/raw"
           rm -rf "$P"
+      - name: Pinned ELF byte and destination diagnostics (HOLD preserved)
+        if: ${{ !cancelled() && steps.link.outcome == 'success' }}
+        working-directory: experiments/scope-weave-005
+        run: |
+          set -eu
+          node inspect_elf_evidence.mjs --selftest
+          for d in scope-objects scope-repeat; do
+            node inspect_elf_evidence.mjs baseline "$RUNNER_TEMP/$d/baseline.elf" "$RUNNER_TEMP/audit-toolchain/bin/llvm-objdump"
+            node inspect_elf_evidence.mjs scope "$RUNNER_TEMP/$d/candidate.elf" "$RUNNER_TEMP/audit-toolchain/bin/llvm-objdump"
+          done
 # No package, no binary publication or physical device access.
