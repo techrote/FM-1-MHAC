@@ -86,22 +86,43 @@ int main(int argc,char **argv){
 #if FS != 44100u
 #error Scope Context requires 44100 Hz
 #endif
+#ifdef CP_POLICY_TARGET
+#include "context_policy.h"
+static cp_policy_audio synth;
+static volatile uint32_t command=(3u<<12)|CP_EQ_BIT;
+static void app_audio(int32_t *out,uint32_t n){uint32_t c=command;cp_policy_render(&synth,out,n,c);}
+#else
 static cp_audio synth;
 static volatile uint32_t command=3u<<12;
 static void app_audio(int32_t *out,uint32_t n){uint32_t c=command;cp_render(&synth,out,n,c);}
+#endif
 static void app_main(void){
     cp_edit e={0,0,0,3,0,0};uint32_t prev=0,shown=~0u;
+#ifdef CP_POLICY_TARGET
+    unsigned equivalent=1,epoch=0;
+#endif
     static const char *const labels[]={"BEACON","RETURN","WAIT","REF"};
     static const char *const ctx[]={"CTX BEACON","CTX RETURN","CTX WAIT","CTX UNKNOWN"};
     for(;;){
         platform_poll();uint32_t released,b=fm1_input_edges(&released);
         uint32_t keys=fm1_in.notes,down=(keys&~prev)|fm1_input_note_edges();prev=keys;
-        for(unsigned k=0;k<27;k++)if(down&(1u<<k))cp_key(&e,k);
+        for(unsigned k=0;k<27;k++)if(down&(1u<<k)){
+#ifdef CP_POLICY_TARGET
+            if(k==25){equivalent^=1;epoch=(epoch+1)&CP_EPOCH_MASK;continue;}
+            if(k==26){epoch=(epoch+1)&CP_EPOCH_MASK;continue;}
+#endif
+            cp_key(&e,k);
+        }
         cp_knob(&e,fm1_enc_take(ENC_KNOB1));
         if(b&(1u<<BTN_SEL))e.witness^=1;
         if(b&(1u<<BTN_PLAY))e.run^=1;
         if(b&(1u<<BTN_HOME))e.run=0;
-        uint32_t c=cp_pack(&e);command=c;uint32_t ui=c|((uint32_t)e.witness<<16);
+        uint32_t c=cp_pack(&e);uint32_t ui=c|((uint32_t)e.witness<<16);
+#ifdef CP_POLICY_TARGET
+        command=cp_policy_pack(c,equivalent,epoch);ui|=equivalent<<17;
+#else
+        command=c;
+#endif
         if(ui!=shown){
             char ops[5]={'-','-','-','-',0};unsigned idx=e.index;
             for(unsigned j=e.depth;j;j--){ops[j-1]="QNR"[idx%3];idx/=3;}
@@ -111,8 +132,14 @@ static void app_main(void){
             draw_text_box(0,101,240,&FONT_S,ctx[e.context],C_WHITE,1);
             draw_text_box(0,128,240,&FONT_S,(c&(1u<<14))?"WITNESS ACTIVE":e.witness?"WITNESS ARMED":"WITNESS OFF",C_WHITE,1);
             draw_text_box(0,155,240,&FONT_S,e.run?"PLAYING":"STOPPED",C_WHITE,1);
+#ifdef CP_POLICY_TARGET
+            draw_text_box(0,180,240,&FONT_S,equivalent?"25 EQ MODE / 26 RETRIG":"25 RAW MODE / 26 RETRIG",C_WHITE,1);
+            draw_text_box(0,204,240,&FONT_S,"0-2 OPS / 3-6 LEAF / 7-10 CTX",C_WHITE,1);
+#else
             draw_text_box(0,180,240,&FONT_S,"KEY 0-2 Q N R / 3-6 LEAF",C_WHITE,1);
-            draw_text_box(0,204,240,&FONT_S,"7-10 CTX / 11 POP / 12 CLR",C_WHITE,1);shown=ui;
+            draw_text_box(0,204,240,&FONT_S,"7-10 CTX / 11 POP / 12 CLR",C_WHITE,1);
+#endif
+            shown=ui;
         }
     }
 }

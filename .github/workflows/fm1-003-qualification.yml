@@ -223,4 +223,27 @@ jobs:
           fi
           rm -rf "$P"
           test "$failed" = 0
+      - name: Optional contextual edit policy target compile and ELF link
+        if: ${{ !cancelled() && steps.link.outcome == 'success' }}
+        working-directory: experiments/scope-weave-005
+        run: |
+          set -eu
+          V="$RUNNER_TEMP/policy-variant"
+          mkdir "$V"
+          cp qualify_target.sh qualify_link.sh target_probe.c scope_weave.h "$V/"
+          python3 - "$V" <<'PY'
+          import sys
+          from pathlib import Path
+          p=Path("context_panel.c").read_text()
+          for inc in ("scope_context.c","context_policy.h"):
+              marker='#include "'+inc+'"'
+              assert p.count(marker)==1
+              p=p.replace(marker,Path(inc).read_text())
+          (Path(sys.argv[1])/"app.c").write_text("#define CP_POLICY_TARGET\n"+p)
+          PY
+          sha256sum "$V/app.c"
+          sh "$V/qualify_target.sh" "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/policy-objects"
+          sh "$V/qualify_link.sh" "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/policy-objects"
+          sha256sum "$RUNNER_TEMP/policy-objects/candidate.elf"
+          echo 'Optional policy ELF link only; static audit and modeled execution remain HOLD.'
 # No package, no binary publication or physical device access.
