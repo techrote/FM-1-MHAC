@@ -224,6 +224,7 @@ jobs:
           rm -rf "$P"
           test "$failed" = 0
       - name: Optional contextual edit policy target compile and ELF link
+        id: policy_link
         if: ${{ !cancelled() && steps.link.outcome == 'success' }}
         working-directory: experiments/scope-weave-005
         run: |
@@ -246,4 +247,69 @@ jobs:
           sh "$V/qualify_link.sh" "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/policy-objects"
           sha256sum "$RUNNER_TEMP/policy-objects/candidate.elf"
           echo 'Optional policy ELF link only; static audit and modeled execution remain HOLD.'
+      - name: Native live policy differential witness
+        if: ${{ !cancelled() }}
+        working-directory: experiments/scope-weave-005
+        run: |
+          set -eu
+          python3 policy_capture.py
+          for c in gcc clang; do
+            "$c" -std=c11 -O2 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all live_policy_fixture.c -o "$RUNNER_TEMP/live-$c"
+            for mode in 0 1 2 3; do
+              "$RUNNER_TEMP/live-$c" "$mode" > "$RUNNER_TEMP/live-$c-$mode.pcm"
+            done
+          done
+          for mode in 0 1 2 3; do
+            cmp "$RUNNER_TEMP/live-gcc-$mode.pcm" "$RUNNER_TEMP/live-clang-$mode.pcm"
+          done
+          python3 - "$RUNNER_TEMP" <<'PY'
+          import sys
+          from pathlib import Path
+          from policy_capture import pcm,judge
+          p=Path(sys.argv[1])
+          ref=pcm((p/'live-gcc-0.pcm').read_bytes())
+          for mode in (1,2,3):
+              got=pcm((p/f'live-gcc-{mode}.pcm').read_bytes())
+              at=judge(ref,got,2*18522,mode!=1)
+              assert at==(None if mode==1 else 18522)
+              print(f'native mode={mode} restart_frame={at} PASS')
+          PY
+      - name: Optional policy independent ELF rebuild and unchanged static audit
+        if: ${{ !cancelled() && steps.policy_link.outcome == 'success' }}
+        working-directory: experiments/scope-weave-005
+        run: |
+          set -eu
+          V="$RUNNER_TEMP/policy-variant"
+          cp audit_elf.py "$V/"
+          sh "$V/qualify_target.sh" "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/policy-repeat"
+          sh "$V/qualify_link.sh" "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/policy-repeat"
+          python3 "$V/audit_elf.py" "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/audit-toolchain/bin" "$RUNNER_TEMP/policy-objects" "$RUNNER_TEMP/policy-repeat"
+      - name: Optional policy live physical-key DAC differential
+        if: ${{ !cancelled() && steps.policy_link.outcome == 'success' }}
+        working-directory: experiments/scope-weave-005
+        timeout-minutes: 5
+        run: |
+          set -eu
+          ELF="$RUNNER_TEMP/policy-objects/candidate.elf"
+          EMU="$RUNNER_TEMP/fm1-emu"
+          test "$(git -C "$EMU" rev-parse HEAD)" = 736aded65c8e2e9d652cf595fca248734483a877
+          D="$RUNNER_TEMP/scope-strict"
+          cp strict_policy.rs "$D/src/main.rs"
+          rustup run 1.95.0 cargo test --offline --locked --manifest-path "$D/Cargo.toml"
+          rustup run 1.95.0 cargo build --release --offline --locked --manifest-path "$D/Cargo.toml"
+          test -z "$(git -C "$EMU" status --porcelain)"
+          P="$RUNNER_TEMP/policy-live"
+          mkdir "$P"
+          for case in control eq explicit raw; do
+            keys="N0 N1 N6 N8 N8"
+            case "$case" in
+              control) live=N8;;
+              eq) live=N9;;
+              explicit) live=N26;;
+              raw) keys="N0 N1 N6 N8 N25"; live=N9;;
+            esac
+            FM1_CONTEXT_KEYS="$keys" FM1_LIVE_KEY="$live" FM1_PCM_CAPTURE_PREFIX="$P/$case" timeout 65s "$D/target/release/strict_scope" "$ELF" puya 800000000
+          done
+          python3 policy_capture.py "$P/control" "$P/eq" "$P/explicit" "$P/raw"
+          rm -rf "$P"
 # No package, no binary publication or physical device access.
