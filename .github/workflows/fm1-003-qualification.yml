@@ -56,6 +56,15 @@ jobs:
           cmp "$RUNNER_TEMP/context-gcc.txt" "$RUNNER_TEMP/context-clang.txt"
           cat "$RUNNER_TEMP/context-gcc.txt"
           printf '%s\n' '6b0f12a7de94a7b5c4d75deaa625baf088ead075c7320b484f1aeb413d416d25  context-gcc.pcm' | (cd "$RUNNER_TEMP" && sha256sum -c -)
+      - name: Native acoustic edit equivalence and intentional retrigger
+        working-directory: experiments/scope-weave-005
+        run: |
+          set -eu
+          for c in gcc clang; do
+            "$c" -std=c11 -O2 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all policy_verify.c -o "$RUNNER_TEMP/policy-$c"
+            "$RUNNER_TEMP/policy-$c" "$RUNNER_TEMP/policy-$c.pcm"
+          done
+          cmp "$RUNNER_TEMP/policy-gcc.pcm" "$RUNNER_TEMP/policy-clang.pcm"
       - name: Fetch pinned Dinghy and toolchain
         run: |
           set -eu
