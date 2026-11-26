@@ -349,4 +349,35 @@ jobs:
             done
           done
           node mmio_census.mjs "$P"
+      - name: Diagnostic MMIO instruction context with unmodified transcript comparison
+        if: ${{ !cancelled() && steps.policy_link.outcome == 'success' }}
+        working-directory: experiments/scope-weave-005
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          node mmio_origin.mjs --selftest
+          D="$RUNNER_TEMP/scope-strict"
+          EMU="$RUNNER_TEMP/fm1-emu"
+          TRACE="$RUNNER_TEMP/fm1-emu-origin"
+          T="$RUNNER_TEMP/scope-origin"
+          cp -a "$EMU" "$TRACE"
+          node mmio_origin.mjs --install "$TRACE"
+          mkdir -p "$T/src"
+          cp strict_scope.rs "$T/src/main.rs"
+          sed "s|$EMU/crates/|$TRACE/crates/|g" "$D/Cargo.toml" > "$T/Cargo.toml"
+          cp "$D/Cargo.lock" "$T/Cargo.lock"
+          rustup run 1.95.0 cargo test --offline --locked --manifest-path "$T/Cargo.toml"
+          rustup run 1.95.0 cargo build --release --offline --locked --manifest-path "$T/Cargo.toml"
+          P="$RUNNER_TEMP/mmio-boot"
+          for part in puya uc25hq80; do
+            for variant in baseline policy; do
+              case "$variant" in
+                baseline) ELF="$RUNNER_TEMP/scope-objects/baseline.elf";;
+                policy) ELF="$RUNNER_TEMP/policy-objects/candidate.elf";;
+              esac
+              FM1_MMIO_BOOT_ONLY=1 timeout 60s "$T/target/release/strict_scope" "$ELF" "$part" 800000000 > "$P/$part-$variant.origin.log" 2>&1
+              node mmio_origin.mjs --compare "$P/$part-$variant.log" "$P/$part-$variant.origin.log" "$ELF" "$RUNNER_TEMP/audit-toolchain/bin/llvm-objdump"
+            done
+          done
+          test -z "$(git -C "$EMU" status --porcelain)"
 # No package, no binary publication or physical device access.
