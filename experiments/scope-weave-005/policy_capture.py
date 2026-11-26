@@ -55,7 +55,31 @@ def judge(ref, got, edit, restart):
     return candidates[0]
 
 
-def load(prefix, templates):
+def verify_witness(a, bounds, at, expected, templates):
+    """Late audible readback prevents a missed hidden edit from passing."""
+    from scope_inverse import feasible, GAIN
+    if at % 2 or not bounds[0] < at < bounds[1]:
+        raise ValueError('invalid witness receipt')
+    pattern=synth([0,1,10,expected,4,3,9],templates)
+    start=max(bounds[0],at-1024)
+    end=min(bounds[1]-len(pattern),at+22050)
+    matches=[]
+    previous=None
+    for i in range(max(0,start-256),min(bounds[1],end+130),2):
+        if max(abs(a[i]),abs(a[i+1]))<=2:
+            continue
+        if previous is None or i-previous>256:
+            for shift in range(65):
+                o=i-2*shift
+                if start<=o<=end and feasible(pattern,a[o:o+len(pattern)],GAIN) is not None:
+                    matches.append(o//2)
+        previous=i
+    if len(matches)!=1:
+        raise ValueError(f'expected one audible context readback, got {matches}')
+    return matches[0]
+
+
+def load(prefix, templates, expected):
     p=pathlib.Path(prefix)
     a=pcm(p.with_suffix('.pcm').read_bytes())
     bounds=tuple(map(int,p.with_suffix('.bounds').read_text().split()))
@@ -63,6 +87,11 @@ def load(prefix, templates):
     e=int(p.with_suffix('.edit').read_text())
     if not bounds[0] < e < bounds[1] or e%2:
         raise ValueError('missing or invalid edit receipt')
+    w=int(p.with_suffix('.witness').read_text())
+    if w<=o+N:
+        raise ValueError('witness overlaps differential window')
+    readback=verify_witness(a,bounds,w,expected,templates)
+    print(f'{prefix}: witnessed_context_token={expected} origin_frame={readback} PASS')
     return x,e-o
 
 
@@ -82,7 +111,16 @@ def selftest(templates):
             try: judge(x,z,e,r)
             except ValueError: pass
             else: raise AssertionError('negative control accepted')
-    print('native atlas synthetic policy witness: 12 positive / 9 negative PASS')
+        # A late witnessed phrase must actually expose the changed context.
+        late=array.array('h',(round(v*gain) for v in synth([0,1,10,8,4,3,9],templates)))
+        at=len(a)+200
+        a.extend([0]*400);a.extend(late);a.extend([0]*800)
+        bounds=(200,len(a)-800,len(a)-400,len(a))
+        assert verify_witness(a,bounds,at,8,templates)==(at+200)//2
+        try: verify_witness(a,bounds,at,7,templates)
+        except ValueError: pass
+        else: raise AssertionError('wrong context readback accepted')
+    print('native atlas synthetic policy witness: 15 positive / 12 negative PASS')
 
 
 def main():
@@ -91,14 +129,14 @@ def main():
         selftest(templates);return
     if len(sys.argv)!=5:
         raise SystemExit('usage: policy_capture.py CONTROL EQ EXPLICIT RAW')
-    ref,edit=load(sys.argv[1],templates)
+    ref,edit=load(sys.argv[1],templates,7)
     # Verify control is the expected periodic phrase, not merely any matching stream.
     span=2*SLOT*len(SEQ)
     from scope_inverse import feasible, GAIN
     if feasible(synth(SEQ,templates),ref[:span],GAIN) is None or ref != (ref[:span]*4)[:N]:
         raise ValueError('control is not the expected periodic phrase')
-    for p,restart in zip(sys.argv[2:],(False,True,True)):
-        x,e=load(p,templates)
+    for p,restart,expected in zip(sys.argv[2:],(False,True,True),(8,7,8)):
+        x,e=load(p,templates,expected)
         at=judge(ref,x,e,restart)
         print(f'{p}: edit_frame={e//2} restart_frame={at} exact PCM PASS')
     print('live policy modeled DAC comparison PASS')
