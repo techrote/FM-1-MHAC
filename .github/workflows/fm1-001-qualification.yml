@@ -1,0 +1,147 @@
+name: FM1-001 isolated host and compile-only gate
+on:
+  pull_request:
+    paths:
+      - 'experiments/phase-debt-001/**'
+      - '.github/workflows/fm1-001-qualification.yml'
+permissions:
+  contents: read
+concurrency:
+  group: fm1-001-qualification
+  cancel-in-progress: true
+jobs:
+  qualify:
+    if: github.head_ref == 'fm1/001-phase-debt' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact public PR merge revision
+        run: |
+          set -eu
+          git init -q
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git fetch --depth=1 origin "$GITHUB_REF"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Native original core and panel replay
+        working-directory: experiments/phase-debt-001
+        run: |
+          set -eu
+          cc -std=c11 -Wall -Wextra -Werror -O2 -fsanitize=undefined verify.c -o verify
+          ./verify
+          sha256sum phase-debt.wav
+          cc -std=c11 -Wall -Wextra -Werror -O2 -fsanitize=undefined -Ihost-shim panel_replay.c -o panel_replay
+          ./panel_replay
+          sha256sum panel-replay.wav
+          cc -std=c11 -Wall -Wextra -Werror -O2 -fsanitize=undefined transition_stress.c -o transition_stress
+          ./transition_stress
+      - name: Fetch read-only pinned Dinghy source
+        run: |
+          set -eu
+          git init -q "$RUNNER_TEMP/dinghy"
+          git -C "$RUNNER_TEMP/dinghy" remote add origin https://github.com/zvenson/dinghy.git
+          git -C "$RUNNER_TEMP/dinghy" fetch --depth=1 origin 92f17b28f2d05f2f78fd1b160b58475d518902c8
+          git -C "$RUNNER_TEMP/dinghy" checkout --detach FETCH_HEAD
+      - name: Actual upstream host baseline and Phase Debt replay
+        working-directory: experiments/phase-debt-001
+        run: sh qualify_host.sh "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/phase-debt-host"
+      - name: Alternative pi32v2 compile-only gate (no SDK, link or package)
+        working-directory: experiments/phase-debt-001
+        run: |
+          set -eu
+          curl -fL --retry 1 --max-time 90 -o "$RUNNER_TEMP/pi32v2.tar.xz" https://github.com/jvitkauskas/pi32v2-llvm/releases/download/pi32v2-23.1.5-2/pi32v2-llvm-23.1.5-2-linux-x64.tar.xz
+          sh qualify_target.sh "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/phase-debt-objects"
+      - name: Experimental ELF-only link (no packaging or device I/O)
+        id: link
+        working-directory: experiments/phase-debt-001
+        run: sh qualify_link.sh "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/phase-debt-objects"
+      - name: Independent target rebuild and ELF/MMIO audit (no package)
+        working-directory: experiments/phase-debt-001
+        run: |
+          set -eu
+          sh qualify_target.sh "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/phase-debt-repeat"
+          sh qualify_link.sh "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/phase-debt-repeat"
+          mkdir "$RUNNER_TEMP/audit-toolchain"
+          tar -xJf "$RUNNER_TEMP/pi32v2.tar.xz" -C "$RUNNER_TEMP/audit-toolchain" --strip-components=1
+          python3 audit_elf.py "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/audit-toolchain/bin" "$RUNNER_TEMP/phase-debt-objects" "$RUNNER_TEMP/phase-debt-repeat"
+
+      - name: Strict bare-ELF peripheral progress diagnostic (does not waive static audit)
+        if: ${{ !cancelled() && steps.link.outcome == 'success' }}
+        working-directory: experiments/phase-debt-001
+        timeout-minutes: 6
+        run: |
+          set -eu
+          EMU="$RUNNER_TEMP/fm1-emu"
+          PIN=736aded65c8e2e9d652cf595fca248734483a877
+          git init -q "$EMU"
+          git -C "$EMU" remote add origin https://github.com/joakimeriksson/fm1-emu.git
+          git -C "$EMU" fetch --depth=1 origin "$PIN"
+          git -C "$EMU" checkout --detach FETCH_HEAD
+          test "$(git -C "$EMU" rev-parse HEAD)" = "$PIN"
+          # Rust 1.95 stabilizes the if-let match guards used by this exact fm1-core pin.
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup run 1.95.0 rustc --version --verbose
+          D="$RUNNER_TEMP/fm1-strict-smoke"
+          mkdir -p "$D/src"
+          cp strict_smoke.rs "$D/src/main.rs"
+          cat > "$D/Cargo.toml" <<EOF
+          [package]
+          name = "strict_smoke"
+          version = "0.1.0"
+          edition = "2021"
+          [dependencies]
+          fm1-soc = { path = "$EMU/crates/fm1-soc" }
+          fm1-core = { path = "$EMU/crates/fm1-core" }
+          [workspace]
+          EOF
+          rustup run 1.95.0 cargo generate-lockfile --offline --manifest-path "$D/Cargo.toml"
+          cat "$D/Cargo.lock"
+          rustup run 1.95.0 cargo test --offline --locked --manifest-path "$D/Cargo.toml"
+          rustup run 1.95.0 cargo build --release --offline --locked --manifest-path "$D/Cargo.toml"
+          test -z "$(git -C "$EMU" status --porcelain)"
+          # Record historical anomaly context even though its classification remains HOLD.
+          TC="$RUNNER_TEMP/audit-toolchain/bin"
+          ELF="$RUNNER_TEMP/phase-debt-objects"
+          if test -x "$TC/llvm-objdump"; then
+            "$TC/llvm-readelf" -s "$ELF/baseline.elf" | grep -E 'fm1_cstart' || true
+            "$TC/llvm-objdump" -d --start-address=0x02002240 --stop-address=0x02002278 "$ELF/baseline.elf" || true
+          fi
+          PCM="$RUNNER_TEMP/fm1-candidate-pcm"
+          mkdir "$PCM"
+          python3 pcm_receipt.py --selftest
+          failed=0
+          for app in baseline candidate; do
+            sha256sum "$ELF/$app.elf"
+            for part in puya uc25hq80; do
+              if FM1_PCM_CAPTURE_PREFIX="$PCM/$part" timeout 45s "$D/target/release/strict_smoke" "$ELF/$app.elf" "$part" 200000000; then
+                echo "case=$app/$part passed modeled peripheral progress diagnostic"
+              else
+                rc=$?
+                echo "case=$app/$part HOLD exit=$rc"
+                failed=1
+              fi
+            done
+          done
+          test "$failed" = 0
+          FM1_PCM_CAPTURE_PREFIX="$PCM/puya-repeat" timeout 45s "$D/target/release/strict_smoke" "$ELF/candidate.elf" puya 200000000
+          python3 pcm_receipt.py "$PCM/puya" "$PCM/uc25hq80" "$PCM/puya-repeat"
+          rm -rf "$PCM"
+          # Native positive and negative control first, then actual modeled panel.
+          MODE="$RUNNER_TEMP/fm1-mode-receipts"
+          mkdir "$MODE"
+          cc -std=c11 -Wall -Wextra -Werror -O2 -fsanitize=undefined mode_reference.c -o "$MODE/reference"
+          (cd "$MODE" && ./reference)
+          python3 mode_receipt.py "$MODE"
+          python3 capture_witness.py "$MODE"
+          python3 test_capture_witness.py "$MODE"
+          for part in puya uc25hq80; do
+            mkdir "$MODE/$part"
+            for mode in aligned staggered fixed moving; do
+              FM1_PANEL_MODE="$mode" FM1_PCM_CAPTURE_PREFIX="$MODE/$part/$mode" timeout 45s "$D/target/release/strict_smoke" "$ELF/candidate.elf" "$part" 500000000
+            done
+            echo "four-mode fingerprint part=$part"
+            python3 mode_receipt.py "$MODE/$part"
+            python3 capture_witness.py "$MODE/$part"
+          done
+          rm -rf "$MODE"
+# No combined binary, package, WAV or upstream asset is uploaded/published.
