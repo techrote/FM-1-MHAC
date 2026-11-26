@@ -166,4 +166,52 @@ jobs:
           mkdir "$RUNNER_TEMP/context-audit-toolchain"
           tar -xJf "$RUNNER_TEMP/pi32v2.tar.xz" -C "$RUNNER_TEMP/context-audit-toolchain" --strip-components=1
           python3 "$V/audit_elf.py" "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/context-audit-toolchain/bin" "$RUNNER_TEMP/context-objects" "$RUNNER_TEMP/context-repeat"
+
+      - name: Contextual native physical-key capture contracts
+        if: ${{ !cancelled() && steps.link.outcome == 'success' }}
+        working-directory: experiments/scope-weave-005
+        run: |
+          set -eu
+          python3 context_capture.py
+      - name: Contextual strict modeled panel and acoustic receiver
+        if: ${{ !cancelled() && steps.link.outcome == 'success' }}
+        working-directory: experiments/scope-weave-005
+        timeout-minutes: 9
+        run: |
+          set -eu
+          ELF="$RUNNER_TEMP/context-objects/candidate.elf"
+          test -s "$ELF"
+          sha256sum "$ELF"
+          EMU="$RUNNER_TEMP/fm1-emu"
+          test "$(git -C "$EMU" rev-parse HEAD)" = 736aded65c8e2e9d652cf595fca248734483a877
+          D="$RUNNER_TEMP/scope-strict"
+          cp strict_context.rs "$D/src/main.rs"
+          rustup run 1.95.0 cargo test --offline --locked --manifest-path "$D/Cargo.toml"
+          rustup run 1.95.0 cargo build --release --offline --locked --manifest-path "$D/Cargo.toml"
+          test -z "$(git -C "$EMU" status --porcelain)"
+          P="$RUNNER_TEMP/context-modeled-pcm"
+          mkdir "$P"
+          failed=0
+          for part in puya uc25hq80; do
+            if test "$part" = puya; then cases="literal witness unwitnessed unknown edited"; else cases="witness"; fi
+            for case in $cases; do
+              prefix="$P/$part-$case"
+              keys="$(python3 -c 'import sys; from context_capture import CASES; print(CASES[sys.argv[1]][0])' "$case")"
+              if FM1_CONTEXT_KEYS="$keys" FM1_PCM_CAPTURE_PREFIX="$prefix" timeout 65s "$D/target/release/strict_scope" "$ELF" "$part" 800000000; then
+                if python3 context_capture.py "$prefix" "$case"; then
+                  echo "context-case=$part/$case PASS"
+                else
+                  echo "context-case=$part/$case HOLD decoder"; failed=1
+                fi
+              else
+                echo "context-case=$part/$case HOLD emulator"; failed=1
+              fi
+            done
+          done
+          if test "$failed" = 0; then
+            cmp "$P/puya-witness.pcm" "$P/uc25hq80-witness.pcm"
+            echo "context cross-model PCM PASS"
+          fi
+          rm -rf "$P"
+          test "$failed" = 0
 # No package, no binary publication or physical device access.
