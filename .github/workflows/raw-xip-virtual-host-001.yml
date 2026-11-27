@@ -83,7 +83,8 @@ jobs:
         run: |
           Set-Location "$env:RUNNER_TEMP/fm1-emu"
           $env:NO_INSTALL='1'
-          rustup run 1.95.0 pwsh -NoProfile -Command "tools/build_plugin.ps1"
+          $env:RUSTUP_TOOLCHAIN='1.95.0'
+          tools/build_plugin.ps1
       - name: Steinberg VST3 validator
         shell: pwsh
         run: |
