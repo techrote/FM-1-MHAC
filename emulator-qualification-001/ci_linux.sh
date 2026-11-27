@@ -51,7 +51,7 @@ build_emu "$CURRENT" "$RUNNER_TEMP/fm1-emu-current"
 run_case() {
   exe="$1"; preset="$2"; part="$3"; out="$4"; run_dir="$5"
   mkdir -p "$run_dir/work"
-  keys="600:N$preset,700:N$preset^,900:PLAY,1000:PLAY^,3600:HOME,3700:HOME^"
+  keys="600-700:N$preset,900-1000:PLAY,3600-3700:HOME"
   name="$RES/$out"
   (
     cd "$run_dir"
