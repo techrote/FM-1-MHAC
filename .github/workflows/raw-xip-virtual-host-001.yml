@@ -1,0 +1,179 @@
+name: RAW-XIP-VIRTUAL-HOST-001
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'raw-xip-virtual-host-001/**'
+      - '.github/workflows/raw-xip-virtual-host-001.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: raw-xip-virtual-host-001-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  images:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build exact qualified raw XIP images
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git init -q "$RUNNER_TEMP/dinghy"
+          git -C "$RUNNER_TEMP/dinghy" remote add origin https://github.com/zvenson/dinghy.git
+          git -C "$RUNNER_TEMP/dinghy" fetch --depth=1 origin 92f17b28f2d05f2f78fd1b160b58475d518902c8
+          git -C "$RUNNER_TEMP/dinghy" checkout --detach FETCH_HEAD
+          curl -fL --retry 2 --max-time 120 -o "$RUNNER_TEMP/pi32v2.tar.xz" https://github.com/jvitkauskas/pi32v2-llvm/releases/download/pi32v2-23.1.5-2/pi32v2-llvm-23.1.5-2-linux-x64.tar.xz
+          echo 'cb896562418a2be93edb9bac26af4bc81a106a32974002a78e6b9fc203c93990  '"$RUNNER_TEMP/pi32v2.tar.xz" | sha256sum -c -
+          mkdir "$RUNNER_TEMP/images"
+          build() {
+            name="$1"; ref="$2"; exp="$3"
+            repo="$RUNNER_TEMP/repo-$name"; out="$RUNNER_TEMP/obj-$name"
+            git init -q "$repo"; git -C "$repo" remote add origin https://github.com/techrote/FM-1-MHAC.git
+            git -C "$repo" fetch --depth=1 origin "$ref"; git -C "$repo" checkout --detach FETCH_HEAD
+            (cd "$repo/$exp" && sh qualify_target.sh "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$out" && sh qualify_link.sh "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$out")
+            python3 emulator-qualification-001/elf_to_xip.py "$out/candidate.elf" "$RUNNER_TEMP/images/$name.xip.bin" | tee "$RUNNER_TEMP/images/$name.json"
+          }
+          build phase-debt ff0e6aff91da9af49bbfe45b2af08401b89fafa0 experiments/phase-debt-001
+          build receipt-loom 7359337559af4d673038320a0b1eff666c74ef2f experiments/receipt-loom-003
+          build scope-weave b8ce089a770945bd19d03204c536b85dbfced6af experiments/scope-weave-005
+          mkdir -p "$RUNNER_TEMP/images/source"
+          git -C "$RUNNER_TEMP/dinghy" archive --format=tar.gz --output="$RUNNER_TEMP/images/source/dinghy-92f17b28.tar.gz" HEAD
+          git -C "$RUNNER_TEMP/repo-phase-debt" archive --format=tar.gz --output="$RUNNER_TEMP/images/source/phase-debt-ff0e6aff.tar.gz" HEAD experiments/phase-debt-001
+          git -C "$RUNNER_TEMP/repo-receipt-loom" archive --format=tar.gz --output="$RUNNER_TEMP/images/source/receipt-loom-73593375.tar.gz" HEAD experiments/receipt-loom-003
+          git -C "$RUNNER_TEMP/repo-scope-weave" archive --format=tar.gz --output="$RUNNER_TEMP/images/source/scope-weave-b8ce089a.tar.gz" HEAD experiments/scope-weave-005
+          printf '%s\n' \
+            'Dinghy: 92f17b28f2d05f2f78fd1b160b58475d518902c8' \
+            'Phase Debt: ff0e6aff91da9af49bbfe45b2af08401b89fafa0' \
+            'Receipt Loom: 7359337559af4d673038320a0b1eff666c74ef2f' \
+            'Scope Weave: b8ce089a770945bd19d03204c536b85dbfced6af' \
+            'pi32v2 LLVM archive: cb896562418a2be93edb9bac26af4bc81a106a32974002a78e6b9fc203c93990' \
+            'These archives are the exact source snapshots used to construct the included bare XIP images.' \
+            > "$RUNNER_TEMP/images/source/PROVENANCE.txt"
+          (cd "$RUNNER_TEMP/images" && sha256sum *.bin > SHA256SUMS.txt && sha256sum source/* > source/SHA256SUMS.txt && cat SHA256SUMS.txt && cat source/SHA256SUMS.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: raw-xip-images
+          path: ${{ runner.temp }}/images
+
+  plugin-windows:
+    needs: images
+    runs-on: windows-2025
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: raw-xip-images
+          path: raw-images
+      - name: Recover and patch frozen fm1-emu
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          git clone --no-checkout https://github.com/joakimeriksson/fm1-emu.git "$env:RUNNER_TEMP/fm1-emu"
+          git -C "$env:RUNNER_TEMP/fm1-emu" checkout 736aded65c8e2e9d652cf595fca248734483a877
+          python raw-xip-virtual-host-001/patch_fm1_emu.py "$env:RUNNER_TEMP/fm1-emu"
+          if ($LASTEXITCODE) { throw "raw-XIP patch failed" }
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP/fm1-emu/crates/fm1-plugin/tests/fixtures" | Out-Null
+          Copy-Item raw-xip-virtual-host-001/raw_xip.rs "$env:RUNNER_TEMP/fm1-emu/crates/fm1-plugin/tests/raw_xip.rs"
+          Copy-Item raw-images/scope-weave.xip.bin "$env:RUNNER_TEMP/fm1-emu/crates/fm1-plugin/tests/fixtures/scope-weave.xip.bin"
+          git -C "$env:RUNNER_TEMP/fm1-emu" diff --check
+      - name: Raw-XIP plugin engine test
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup run 1.95.0 cargo test --manifest-path "$env:RUNNER_TEMP/fm1-emu/crates/fm1-plugin/Cargo.toml" --release --test raw_xip -- --nocapture
+      - name: Full plugin unit/engine tests
+        shell: pwsh
+        run: |
+          Set-Location "$env:RUNNER_TEMP/fm1-emu"
+          node tools/fetch_firmwares.mjs felucca
+          if ($LASTEXITCODE -or -not (Test-Path "reference/firmwares/felucca.fwsc")) { throw "Felucca regression fixture missing" }
+          node tools/felucca_is_hashed.mjs
+          if ($LASTEXITCODE) { throw "Felucca fixture identity check failed" }
+          rustup run 1.95.0 cargo test --manifest-path "crates/fm1-plugin/Cargo.toml" --release --lib
+      - name: Build CLAP and VST3
+        shell: pwsh
+        run: |
+          Set-Location "$env:RUNNER_TEMP/fm1-emu"
+          $env:NO_INSTALL='1'
+          $env:RUSTUP_TOOLCHAIN='1.95.0'
+          tools/build_plugin.ps1
+      - name: Steinberg VST3 validator
+        shell: pwsh
+        run: |
+          Set-Location "$env:RUNNER_TEMP/fm1-emu"
+          cmake -S target/plugin/build/cpm/vst3sdk -B target/plugin/vst3sdk-build -A x64 -DSMTG_ENABLE_VST3_PLUGIN_EXAMPLES=OFF -DSMTG_ENABLE_VSTGUI_SUPPORT=OFF -DSMTG_ENABLE_VST3_HOSTING_EXAMPLES=ON
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cmake --build target/plugin/vst3sdk-build --config Release --target validator
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $env:CLAP_PATH="$PWD/target/plugin"
+          target/plugin/vst3sdk-build/bin/Release/validator.exe target/plugin/FM-1.vst3 | Tee-Object "$env:GITHUB_WORKSPACE/vst3-validator.txt"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Package raw-XIP DAW evaluator
+        shell: pwsh
+        run: |
+          $out="$env:GITHUB_WORKSPACE/RAW-XIP-VIRTUAL-HOST-Windows-x64"
+          New-Item -ItemType Directory -Force "$out/images","$out/source" | Out-Null
+          Copy-Item "$env:RUNNER_TEMP/fm1-emu/target/plugin/FM-1.clap" "$out/FM-1.clap"
+          Copy-Item "$env:RUNNER_TEMP/fm1-emu/target/plugin/FM-1.vst3" "$out/FM-1.vst3" -Recurse
+          Copy-Item raw-images/*.bin "$out/images"
+          Copy-Item raw-images/*.json "$out/images"
+          Copy-Item raw-images/SHA256SUMS.txt "$out/images"
+          Copy-Item raw-images/source/* "$out/source"
+          Copy-Item raw-xip-virtual-host-001/patch_fm1_emu.py "$out/source"
+          git -C "$env:RUNNER_TEMP/fm1-emu" archive --format=zip -o "$out/source/fm1-emu-736aded65.zip" 736aded65c8e2e9d652cf595fca248734483a877
+          if ($LASTEXITCODE) { throw "fm1-emu source archive failed" }
+          Copy-Item raw-xip-virtual-host-001/README.md "$out/README.md" -ErrorAction SilentlyContinue
+          @("Pinned fm1-emu: 736aded65c8e2e9d652cf595fca248734483a877","Development-only raw XIP host; no .fwsc or physical installer.") | Set-Content "$out/PROVENANCE.txt"
+          Get-ChildItem "$out" -Recurse -File | Sort-Object FullName | ForEach-Object {
+            $h=(Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$h  $($_.FullName.Substring($out.Length+1))"
+          } | Set-Content "$out/SHA256SUMS.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RAW-XIP-VIRTUAL-HOST-Windows-x64
+          path: |
+            RAW-XIP-VIRTUAL-HOST-Windows-x64
+            vst3-validator.txt
+
+  browser:
+    needs: images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: raw-xip-images
+          path: raw-images
+      - name: Patch and build browser host
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git clone --no-checkout https://github.com/joakimeriksson/fm1-emu.git "$RUNNER_TEMP/fm1-emu"
+          git -C "$RUNNER_TEMP/fm1-emu" checkout 736aded65c8e2e9d652cf595fca248734483a877
+          python3 raw-xip-virtual-host-001/patch_fm1_emu.py "$RUNNER_TEMP/fm1-emu"
+          cp raw-xip-virtual-host-001/raw-xip.html "$RUNNER_TEMP/fm1-emu/web/raw-xip.html"
+          cp raw-xip-virtual-host-001/raw-xip.js "$RUNNER_TEMP/fm1-emu/web/raw-xip.js"
+          node --check "$RUNNER_TEMP/fm1-emu/web/raw-xip.js"
+          rustup target add wasm32-unknown-unknown
+          (cd "$RUNNER_TEMP/fm1-emu" && web/build.sh)
+          cp "$RUNNER_TEMP/fm1-emu/web/raw-xip.html" "$RUNNER_TEMP/fm1-emu/web/raw-xip.js" "$RUNNER_TEMP/fm1-emu/web/dist/"
+          cp raw-images/*.xip.bin "$RUNNER_TEMP/fm1-emu/web/dist/"
+          mkdir -p "$RUNNER_TEMP/fm1-emu/web/dist/source"
+          cp raw-images/source/* "$RUNNER_TEMP/fm1-emu/web/dist/source/"
+          cp raw-xip-virtual-host-001/patch_fm1_emu.py "$RUNNER_TEMP/fm1-emu/web/dist/source/"
+          git -C "$RUNNER_TEMP/fm1-emu" archive --format=tar.gz --output="$RUNNER_TEMP/fm1-emu/web/dist/source/fm1-emu-736aded65.tar.gz" 736aded65c8e2e9d652cf595fca248734483a877
+          grep -q 'm.raw' "$RUNNER_TEMP/fm1-emu/web/dist/worklet.js"
+          FM1_FW="$GITHUB_WORKSPACE/raw-images/scope-weave.xip.bin" FM1_BENCH_NOKEYS=1 node "$RUNNER_TEMP/fm1-emu/web/bench.mjs" 240 2 "$RUNNER_TEMP/raw.raw"
+          test -s "$RUNNER_TEMP/raw.raw"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RAW-XIP-VIRTUAL-HOST-browser
+          path: ${{ runner.temp }}/fm1-emu/web/dist
