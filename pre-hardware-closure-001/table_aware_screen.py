@@ -72,22 +72,25 @@ def tbb_ranges(rows):
 
 def label_ranges(labels, text_addr, text_bytes, rows):
     ranges=[]
-    for i,(addr,name) in enumerate(labels):
+    for addr,name in labels:
         if not name.startswith(".Ljta"): continue
-        greater=[a for a,_ in labels if a > addr]
-        end=min(greater) if greater else text_addr+len(text_bytes)
-        size=end-addr
-        if size < 12 or size % 4: continue
         off=addr-text_addr
-        if off < 0 or off+size > len(text_bytes): continue
-        words=[struct.unpack_from("<I",text_bytes,off+j)[0] for j in range(0,size,4)]
-        if not all(text_addr <= w < text_addr+len(text_bytes) and w % 2 == 0 for w in words):
-            continue
-        prior=[r for r in rows if r["addr"] < addr][-8:]
+        if off < 0 or off+12 > len(text_bytes): continue
+        words=[]
+        pos=off
+        while pos+4 <= len(text_bytes) and len(words) < 256:
+            w=struct.unpack_from("<I",text_bytes,pos)[0]
+            if not (text_addr <= w < text_addr+len(text_bytes) and w % 2 == 0):
+                break
+            words.append(w)
+            pos += 4
+        if len(words) < 3: continue
+        prior=[r for r in rows if r["addr"] < addr][-10:]
         joined=" | ".join(r["payload"] for r in prior)
-        # Require a computed dispatch immediately before the compiler jump table, not the label alone.
-        if str(addr) not in joined or not re.search(r"\[[^\]]+<<2\]",joined) or not re.search(r"\bgoto\s+r\d+",joined):
+        # Require the compiler-table label plus a nearby indexed load and indirect goto.
+        if not re.search(r"\[[^\]]+<<2\]",joined) or not re.search(r"\bgoto\s+r\d+",joined):
             continue
+        end=addr+4*len(words)
         ranges.append({"start":addr,"end":end,"kind":"computed-address-jump-table",
                        "evidence":{"label":name,"targets":[hex(w) for w in words],"dispatch":joined}})
     return ranges
