@@ -42,7 +42,20 @@ jobs:
           build phase-debt ff0e6aff91da9af49bbfe45b2af08401b89fafa0 experiments/phase-debt-001
           build receipt-loom 7359337559af4d673038320a0b1eff666c74ef2f experiments/receipt-loom-003
           build scope-weave b8ce089a770945bd19d03204c536b85dbfced6af experiments/scope-weave-005
-          (cd "$RUNNER_TEMP/images" && sha256sum *.bin > SHA256SUMS.txt && cat SHA256SUMS.txt)
+          mkdir -p "$RUNNER_TEMP/images/source"
+          git -C "$RUNNER_TEMP/dinghy" archive --format=tar.gz --output="$RUNNER_TEMP/images/source/dinghy-92f17b28.tar.gz" HEAD
+          git -C "$RUNNER_TEMP/repo-phase-debt" archive --format=tar.gz --output="$RUNNER_TEMP/images/source/phase-debt-ff0e6aff.tar.gz" HEAD experiments/phase-debt-001
+          git -C "$RUNNER_TEMP/repo-receipt-loom" archive --format=tar.gz --output="$RUNNER_TEMP/images/source/receipt-loom-73593375.tar.gz" HEAD experiments/receipt-loom-003
+          git -C "$RUNNER_TEMP/repo-scope-weave" archive --format=tar.gz --output="$RUNNER_TEMP/images/source/scope-weave-b8ce089a.tar.gz" HEAD experiments/scope-weave-005
+          cat > "$RUNNER_TEMP/images/source/PROVENANCE.txt" <<'EOF'
+Dinghy: 92f17b28f2d05f2f78fd1b160b58475d518902c8
+Phase Debt: ff0e6aff91da9af49bbfe45b2af08401b89fafa0
+Receipt Loom: 7359337559af4d673038320a0b1eff666c74ef2f
+Scope Weave: b8ce089a770945bd19d03204c536b85dbfced6af
+pi32v2 LLVM archive: cb896562418a2be93edb9bac26af4bc81a106a32974002a78e6b9fc203c93990
+These archives are the exact source snapshots used to construct the included bare XIP images.
+EOF
+          (cd "$RUNNER_TEMP/images" && sha256sum *.bin > SHA256SUMS.txt && sha256sum source/* > source/SHA256SUMS.txt && cat SHA256SUMS.txt && cat source/SHA256SUMS.txt)
       - uses: actions/upload-artifact@v4
         with:
           name: raw-xip-images
@@ -109,8 +122,11 @@ jobs:
           New-Item -ItemType Directory -Force "$out/images","$out/source" | Out-Null
           Copy-Item "$env:RUNNER_TEMP/fm1-emu/target/plugin/FM-1.clap" "$out/FM-1.clap"
           Copy-Item "$env:RUNNER_TEMP/fm1-emu/target/plugin/FM-1.vst3" "$out/FM-1.vst3" -Recurse
-          Copy-Item raw-images/* "$out/images"
+          Copy-Item raw-images/* "$out/images" -Exclude source
+          Copy-Item raw-images/source/* "$out/source"
           Copy-Item raw-xip-virtual-host-001/patch_fm1_emu.py "$out/source"
+          git -C "$env:RUNNER_TEMP/fm1-emu" archive --format=zip -o "$out/source/fm1-emu-736aded65.zip" 736aded65c8e2e9d652cf595fca248734483a877
+          if ($LASTEXITCODE) { throw "fm1-emu source archive failed" }
           Copy-Item raw-xip-virtual-host-001/README.md "$out/README.md" -ErrorAction SilentlyContinue
           @("Pinned fm1-emu: 736aded65c8e2e9d652cf595fca248734483a877","Development-only raw XIP host; no .fwsc or physical installer.") | Set-Content "$out/PROVENANCE.txt"
           Get-ChildItem "$out" -Recurse -File | Sort-Object FullName | ForEach-Object {
@@ -148,6 +164,10 @@ jobs:
           (cd "$RUNNER_TEMP/fm1-emu" && web/build.sh)
           cp "$RUNNER_TEMP/fm1-emu/web/raw-xip.html" "$RUNNER_TEMP/fm1-emu/web/raw-xip.js" "$RUNNER_TEMP/fm1-emu/web/dist/"
           cp raw-images/*.xip.bin "$RUNNER_TEMP/fm1-emu/web/dist/"
+          mkdir -p "$RUNNER_TEMP/fm1-emu/web/dist/source"
+          cp raw-images/source/* "$RUNNER_TEMP/fm1-emu/web/dist/source/"
+          cp raw-xip-virtual-host-001/patch_fm1_emu.py "$RUNNER_TEMP/fm1-emu/web/dist/source/"
+          git -C "$RUNNER_TEMP/fm1-emu" archive --format=tar.gz --output="$RUNNER_TEMP/fm1-emu/web/dist/source/fm1-emu-736aded65.tar.gz" 736aded65c8e2e9d652cf595fca248734483a877
           grep -q 'm.raw' "$RUNNER_TEMP/fm1-emu/web/dist/worklet.js"
           FM1_FW="$GITHUB_WORKSPACE/raw-images/scope-weave.xip.bin" FM1_BENCH_NOKEYS=1 node "$RUNNER_TEMP/fm1-emu/web/bench.mjs" 240 2 "$RUNNER_TEMP/raw.raw"
           test -s "$RUNNER_TEMP/raw.raw"
