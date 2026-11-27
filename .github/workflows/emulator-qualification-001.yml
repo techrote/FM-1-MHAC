@@ -1,0 +1,95 @@
+name: EMULATOR-QUALIFICATION-001
+
+on:
+  pull_request:
+    paths:
+      - 'emulator-qualification-001/**'
+      - '.github/workflows/emulator-qualification-001.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-qualification:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact qualification head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+      - name: Run Linux A/B qualification
+        shell: bash
+        run: bash emulator-qualification-001/ci_linux.sh
+      - name: Upload Linux evidence and raw XIP handoff
+        uses: actions/upload-artifact@v4
+        with:
+          name: emulator-qualification-linux
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/scope-weave.xip.bin
+            ${{ runner.temp }}/xip-receipt.json
+            ${{ runner.temp }}/inherited-audit.log
+            ${{ runner.temp }}/results/**
+
+  legacy-instruments:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout emulator qualification tooling
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+      - name: Build and execute Phase Debt and Receipt Loom exact heads
+        shell: bash
+        run: bash emulator-qualification-001/ci_legacy.sh
+      - name: Upload legacy-instrument evidence and XIP images
+        uses: actions/upload-artifact@v4
+        with:
+          name: emulator-qualification-legacy
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/phase-debt.xip.bin
+            ${{ runner.temp }}/receipt-loom.xip.bin
+            ${{ runner.temp }}/legacy-results/**
+
+  windows-evaluator:
+    needs: [linux-qualification, legacy-instruments]
+    runs-on: windows-2025
+    timeout-minutes: 50
+    steps:
+      - name: Checkout exact qualification head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+      - name: Download Linux XIP/evidence handoff
+        uses: actions/download-artifact@v4
+        with:
+          name: emulator-qualification-linux
+          path: handoff
+      - name: Download Phase Debt and Receipt Loom handoff
+        uses: actions/download-artifact@v4
+        with:
+          name: emulator-qualification-legacy
+          path: handoff
+      - name: Execute native Windows emulator and fm1-live benchmark
+        shell: pwsh
+        run: ./emulator-qualification-001/ci_windows.ps1
+      - name: Assemble portable Windows evaluator
+        shell: pwsh
+        run: ./emulator-qualification-001/package_windows.ps1
+      - name: Upload portable Windows evaluator
+        uses: actions/upload-artifact@v4
+        with:
+          name: FM1-MHAC-emulator-evaluator-windows-x64
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            FM1-MHAC-emulator-evaluator-windows-x64.zip
+            win-results/**
