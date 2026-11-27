@@ -35,6 +35,20 @@ $h9 = (Get-FileHash (Join-Path $results "p9.wav") -Algorithm SHA256).Hash
 if ($h3 -eq $h9) { throw "ordered preset 3 and preset 9 unexpectedly alias" }
 "windows_ordered_pcm_distinct=PASS p3=$h3 p9=$h9" | Tee-Object -FilePath (Join-Path $results "ordered-distinction.txt")
 
+$phaseFile = Get-ChildItem (Join-Path $root "handoff") -Recurse -Filter "phase-debt.xip.bin" | Select-Object -First 1
+$receiptFile = Get-ChildItem (Join-Path $root "handoff") -Recurse -Filter "receipt-loom.xip.bin" | Select-Object -First 1
+if (-not $phaseFile -or -not $receiptFile) { throw "legacy XIP handoff missing" }
+$legacyCases = @(
+  @{ Name="phase-debt"; Image=$phaseFile.FullName; Ms="4700"; Keys="300-400:N3,1200-1300:PLAY,3800-3900:HOME" },
+  @{ Name="receipt-loom"; Image=$receiptFile.FullName; Ms="4800"; Keys="300-400:N26,500-560:SCL,650-710:SCL,800-860:SCL,950-1010:SCL,1100-1160:SCL,1600-1700:PLAY,3900-4000:HOME" }
+)
+foreach ($case in $legacyCases) {
+  $wav = Join-Path $results ($case.Name + ".wav")
+  & $emuExe --bin $case.Image --entry 0x02000120 --ms $case.Ms --keys $case.Keys --flash-chip p25q80 --wav $wav --quiet
+  if ($LASTEXITCODE -ne 0) { throw ("fm1-emu " + $case.Name + " failed") }
+  python (Join-Path $root "emulator-qualification-001\analyze_wav.py") $wav --require-audio --silent-tail-ms 500 | Tee-Object -FilePath (Join-Path $results ($case.Name + ".json"))
+  if ($LASTEXITCODE -ne 0) { throw ("WAV analysis " + $case.Name + " failed") }
+}
 $env:FM1_BENCH_KEYS = "600:N3,700:N3^,900:PLAY,1000:PLAY^,3600:HOME,3700:HOME^"
 $stdout = Join-Path $results "fm1-live-bench.stdout.txt"
 $stderr = Join-Path $results "fm1-live-bench.stderr.txt"
