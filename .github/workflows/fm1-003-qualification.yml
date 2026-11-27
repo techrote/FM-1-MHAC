@@ -102,6 +102,12 @@ jobs:
           mkdir "$RUNNER_TEMP/audit-toolchain"
           tar -xJf "$RUNNER_TEMP/pi32v2.tar.xz" -C "$RUNNER_TEMP/audit-toolchain" --strip-components=1
           python3 audit_elf.py "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/audit-toolchain/bin" "$RUNNER_TEMP/scope-objects" "$RUNNER_TEMP/scope-repeat"
+      - name: Corrective host-only loader finalization (installation HOLD)
+        if: ${{ !cancelled() && steps.link.outcome == 'success' }}
+        timeout-minutes: 4
+        run: |
+          set -eu
+          python3 evidence/fm1-record-fault/finalization_candidate.py "$RUNNER_TEMP/dinghy"
       - name: Optional streaming receiver target object (no firmware integration)
         if: ${{ !cancelled() && steps.link.outcome == 'success' }}
         working-directory: experiments/scope-weave-005
