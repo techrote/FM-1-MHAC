@@ -40,7 +40,6 @@ def main():
     with tempfile.TemporaryDirectory(prefix="pre-hw-prov-") as td:
         td=Path(td); tc=td/"tc"; src=td/"src";tc.mkdir();src.mkdir()
         run(["tar","-xJf",a.archive,"-C",tc,"--strip-components=1"])
-        run(["git","-C",a.dinghy,"archive","--format=tar",PIN],check=True)
         arc=td/"src.tar"
         with arc.open("wb") as f:
             subprocess.run(["git","-C",a.dinghy,"archive","--format=tar",PIN],stdout=f,check=True)
