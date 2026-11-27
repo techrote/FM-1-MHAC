@@ -86,9 +86,31 @@ tar -xzf "$RUNNER_TEMP/release.tar.gz" -C "$RUNNER_TEMP/release"
 REL_EXE="$(find "$RUNNER_TEMP/release" -type f -name fm1-emu -perm -111 | head -1)"
 test -x "$REL_EXE"
 "$REL_EXE" --version | tee "$RES/release-version.txt"
-run_case "$REL_EXE" 3 p25q80 release-p3-puya "$RUNNER_TEMP/run-release"
-if cmp -s "$RES/pin-p3-puya.wav" "$RES/release-p3-puya.wav"; then
-  echo "release_vs_pin_pcm=byte-identical" | tee "$RES/release-ab.txt"
+mkdir -p "$RUNNER_TEMP/run-release/work"
+release_keys="600-700:N3,900-1000:PLAY,3600-3700:HOME"
+set +e
+(
+  cd "$RUNNER_TEMP/run-release"
+  FM1_LCD_TIMED=1 /usr/bin/time -v -o "$RES/release-p3-puya.time.txt" \
+    "$REL_EXE" --bin "$RUNNER_TEMP/scope-weave.xip.bin" --entry 0x02000120 --ms 4500 \
+    --keys "$release_keys" --flash-chip p25q80 --wav "$RES/release-p3-puya.wav" --quiet
+) >"$RES/release-p3-puya.stdout.txt" 2>"$RES/release-p3-puya.stderr.txt"
+release_rc=$?
+set -e
+echo "release_exit=$release_rc" | tee "$RES/release-ab.txt"
+if [ -s "$RES/release-p3-puya.wav" ]; then
+  if python3 "$ROOT/emulator-qualification-001/analyze_wav.py" "$RES/release-p3-puya.wav" \
+      --require-audio --silent-tail-ms 500 | tee "$RES/release-p3-puya.json"; then
+    if cmp -s "$RES/pin-p3-puya.wav" "$RES/release-p3-puya.wav"; then
+      echo "release_vs_pin_pcm=byte-identical" | tee -a "$RES/release-ab.txt"
+    else
+      echo "release_vs_pin_pcm=differs" | tee -a "$RES/release-ab.txt"
+    fi
+  else
+    echo "release_audio_receipt=FAIL" | tee -a "$RES/release-ab.txt"
+  fi
 else
-  echo "release_vs_pin_pcm=differs (release predates qualification pin)" | tee "$RES/release-ab.txt"
+  echo "release_audio_receipt=NO_WAV (historical release cannot qualify this current image)" | tee -a "$RES/release-ab.txt"
 fi
+cat "$RES/release-p3-puya.stdout.txt"
+cat "$RES/release-p3-puya.stderr.txt" >&2
