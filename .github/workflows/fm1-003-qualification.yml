@@ -13,7 +13,7 @@ jobs:
   qualify:
     if: github.head_ref == 'fm1/005-scope-weave' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - name: Checkout exact public PR merge revision
         run: |
@@ -221,7 +221,7 @@ jobs:
             cmp "$P/puya-0-3.pcm" "$P/uc25hq80-0-3.pcm"
             cmp "$P/puya-0-9.pcm" "$P/uc25hq80-0-9.pcm"
           fi
-          rm -rf "$P"
+          # Keep ephemeral control captures for the alternative compiler matrix.
           test "$failed" = 0
       - name: Contextual panel target link and unchanged static audit
         if: ${{ !cancelled() && steps.link.outcome == 'success' }}
@@ -295,7 +295,7 @@ jobs:
             cmp "$P/puya-witness.pcm" "$P/uc25hq80-witness.pcm"
             echo "context cross-model PCM PASS"
           fi
-          rm -rf "$P"
+          # Keep ephemeral control captures for the alternative compiler matrix.
           test "$failed" = 0
       - name: Optional contextual edit policy target compile and ELF link
         id: policy_link
@@ -385,7 +385,7 @@ jobs:
             FM1_CONTEXT_KEYS="$keys" FM1_LIVE_KEY="$live" FM1_PCM_CAPTURE_PREFIX="$P/$case" timeout 65s "$D/target/release/strict_scope" "$ELF" puya 800000000
           done
           python3 policy_capture.py "$P/control" "$P/eq" "$P/explicit" "$P/raw"
-          rm -rf "$P"
+          # Keep ephemeral control captures for the alternative compiler matrix.
       - name: Pinned ELF byte and destination diagnostics (HOLD preserved)
         if: ${{ !cancelled() && steps.link.outcome == 'success' }}
         working-directory: experiments/scope-weave-005
@@ -607,5 +607,137 @@ jobs:
                               "aligned_first_difference_frame":phrase_first,
                               "exact":exact,"installation_authorized":False}), flush=True)
                       need(all_exact, "modeled PCM mismatch")
+          PY
+      - name: Alternative no-jump-table full existing instrument matrix (diagnostic only)
+        if: ${{ !cancelled() && steps.policy_link.outcome == 'success' }}
+        working-directory: experiments/scope-weave-005
+        timeout-minutes: 12
+        run: |
+          set -eu
+          python3 - <<'PY'
+          import hashlib, json, os, shutil, subprocess as sp, sys, tempfile
+          from pathlib import Path
+          import audit_elf as audit
+          import compiler_evidence as ce
+          from context_capture import CASES
+          here = Path.cwd()
+          tmp = Path(os.environ["RUNNER_TEMP"])
+          up, archive, tc = tmp/"dinghy", tmp/"pi32v2.tar.xz", tmp/"audit-toolchain/bin"
+          emu, strict = tmp/"fm1-emu", tmp/"scope-strict"
+          def run(*a, cwd=None):
+              return sp.check_output([str(x) for x in a], cwd=cwd)
+          def need(ok, msg):
+              if not ok:
+                  raise ValueError(msg)
+          def same_capture(a, b):
+              # Capture boundaries are part of the contract, not a phase-aligning waiver.
+              need(a and b and len(a)%4==0 and len(b)%4==0, "invalid stereo capture")
+              first = next((i//4 for i,(x,y) in enumerate(zip(a,b)) if x!=y), None)
+              if first is None and len(a)!=len(b):
+                  first = min(len(a),len(b))//4
+              return a==b, first
+          need(same_capture(b"1234",b"1234")== (True,None), "positive comparator")
+          need(same_capture(b"1234abcd",b"1234abce")== (False,1), "mutation comparator")
+          need(same_capture(b"1234",b"1234abcd")== (False,1), "length comparator")
+          need(run("git","-C",up,"rev-parse","HEAD").decode().strip()==ce.PIN, "wrong upstream")
+          need(not run("git","-C",up,"status","--porcelain"), "dirty upstream")
+          need(ce.digest(archive)==ce.TOOL, "wrong toolchain archive")
+          need(run("git","-C",emu,"rev-parse","HEAD").decode().strip()==
+               "736aded65c8e2e9d652cf595fca248734483a877", "wrong emulator")
+          need(not run("git","-C",emu,"status","--porcelain"), "dirty emulator")
+          flags=["-target","pi32v2","-mcpu=ac791n"]
+          cflags=flags+["-Os","-ffunction-sections","-fno-builtin","-Wall",
+                        "-Wno-unused-function","-Ifirmware/hal","-Ifirmware/src",
+                        "-Ifirmware/gen",'-DAPP_VER="dev"','-DFELUCCA_ID="FM-1_990"']
+          failed=[]
+          with tempfile.TemporaryDirectory(prefix="fm1-alt-full-") as t:
+              root=Path(t)
+              src=root/"source"
+              src.mkdir()
+              (root/"src.tar").write_bytes(run("git","-C",up,"archive",ce.PIN))
+              run("tar","-xf",root/"src.tar","-C",src)
+              startup=[]
+              for name in ("firmware/crt0.S","firmware/hal/fm1_vec.S","firmware/hal/fm1_isr.S"):
+                  obj=root/(Path(name).stem+".o")
+                  run(tc/"clang",*flags,"-c",name,"-o",obj,cwd=src)
+                  startup.append(obj)
+              for variant in ("scope","context","policy"):
+                  reference=tmp/(variant+"-objects")
+                  local=here if variant=="scope" else tmp/(variant+"-variant")
+                  shutil.copyfile(local/"app.c",src/"firmware/src/dinghy.c")
+                  shutil.copyfile(local/"scope_weave.h",src/"firmware/src/scope_weave.h")
+                  def build(label, extra):
+                      d=root/(variant+"-"+label)
+                      d.mkdir()
+                      obj,elf=d/"candidate.o",d/"candidate.elf"
+                      run(tc/"clang",*cflags,*extra,"-c","firmware/src/dinghy.c","-o",obj,cwd=src)
+                      run(tc/"ld.lld","--gc-sections","-e","_start","-T","firmware/app.ld",
+                          *startup,obj,"-o",elf,cwd=src)
+                      return obj,elf
+                  control_obj,control=build("control",[])
+                  need(control_obj.read_bytes()==(reference/"candidate.o").read_bytes(),variant+" control object mismatch")
+                  need(control.read_bytes()==(reference/"candidate.elf").read_bytes(),variant+" control ELF mismatch")
+                  repeat_ref=tmp/(variant+"-repeat")/"candidate.elf"
+                  need(control.read_bytes()==repeat_ref.read_bytes(),variant+" inherited rebuild mismatch")
+                  obj,elf=build("alternative",["-fno-jump-tables"])
+                  obj2,elf2=build("repeat",["-fno-jump-tables"])
+                  need(obj.read_bytes()==obj2.read_bytes() and elf.read_bytes()==elf2.read_bytes(),variant+" alternative rebuild mismatch")
+                  _,hold=audit.audit(elf,tc)
+                  print("alternative_elf "+json.dumps({"variant":variant,"control":ce.digest(control),
+                        "alternative":ce.digest(elf),"rebuild_exact":True,"static_hold":hold,
+                        "installation_authorized":False}),flush=True)
+                  if hold: failed.append(variant+"/static")
+                  shutil.copyfile(here/("strict_"+variant+".rs"),strict/"src/main.rs")
+                  sp.run(["rustup","run","1.95.0","cargo","build","--release","--offline","--locked",
+                          "--manifest-path",str(strict/"Cargo.toml")],check=True)
+                  exe=strict/"target/release/strict_scope"
+                  out=root/(variant+"-captures")
+                  out.mkdir()
+                  if variant=="scope":
+                      cases=[(part,f"{part}-{mode}-{preset}",{"FM1_PANEL_MODE":str(mode),
+                              "FM1_PANEL_PRESET":str(preset)},["panel_inverse.py",str(mode),str(preset)])
+                             for part,modes in (("puya",(0,1,2)),("uc25hq80",(0,)))
+                             for mode in modes for preset in (3,9)]
+                      originals=tmp/"scope-pcm"
+                  elif variant=="context":
+                      cases=[(part,f"{part}-{case}",{"FM1_CONTEXT_KEYS":CASES[case][0]},
+                              ["context_capture.py",case])
+                             for part,names in (("puya",tuple(CASES)),("uc25hq80",("witness",)))
+                             for case in names]
+                      originals=tmp/"context-modeled-pcm"
+                  else:
+                      cases=[("puya",case,{"FM1_CONTEXT_KEYS":"N0 N1 N6 N8 "+("N25" if case=="raw" else "N8"),
+                              "FM1_LIVE_KEY":live},None)
+                             for case,live in (("control","N8"),("eq","N9"),("explicit","N26"),("raw","N9"))]
+                      originals=tmp/"policy-live"
+                  for part,name,settings,decoder in cases:
+                      prefix=out/name
+                      env={k:v for k,v in os.environ.items() if not k.startswith("FM1_")}
+                      env.update(settings,FM1_PCM_CAPTURE_PREFIX=str(prefix))
+                      try:
+                          sp.run([str(exe),str(elf),part,"800000000"],env=env,check=True,timeout=65)
+                          if decoder:
+                              sp.run([sys.executable,decoder[0],str(prefix),*decoder[1:]],check=True,timeout=60)
+                          original=originals/name
+                          a,b=(p.with_suffix(".pcm").read_bytes() for p in (original,prefix))
+                          exact,first=same_capture(a,b)
+                          suffixes=(".bounds",".edit",".witness") if variant=="policy" else (".bounds",)
+                          receipts={suffix:tuple(map(int,original.with_suffix(suffix).read_text().split()))==
+                                    tuple(map(int,prefix.with_suffix(suffix).read_text().split()))
+                                    for suffix in suffixes}
+                          print("alternative_pcm "+json.dumps({"variant":variant,"case":name,
+                                "bytes":[len(a),len(b)],"sha256":[hashlib.sha256(x).hexdigest() for x in (a,b)],
+                                "first_difference_frame":first,"pcm_exact":exact,"receipt_exact":receipts,
+                                "installation_authorized":False}),flush=True)
+                          if not exact or not all(receipts.values()): failed.append(variant+"/"+name)
+                      except (OSError,ValueError,sp.SubprocessError) as e:
+                          print("alternative_case_hold "+json.dumps({"variant":variant,"case":name,"error":str(e)}),flush=True)
+                          failed.append(variant+"/"+name)
+                  if variant=="policy":
+                      sp.run([sys.executable,"policy_capture.py",*[str(out/n) for n in ("control","eq","explicit","raw")]],
+                             check=True,timeout=120)
+                  need(not run("git","-C",emu,"status","--porcelain"),"emulator changed")
+              need(not failed,"alternative qualification HOLD: "+str(failed))
+              print("alternative_matrix=PASS 18 modeled capture comparisons; no installation authorization",flush=True)
           PY
 # No package, no binary publication or physical device access.
