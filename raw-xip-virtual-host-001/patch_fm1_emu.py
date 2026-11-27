@@ -6,13 +6,13 @@ ROOT = Path(sys.argv[1]).resolve()
 
 def edit(rel, pairs):
     p = ROOT / rel
-    s = p.read_text()
+    s = p.read_text(encoding="utf-8")
     for old, new in pairs:
         n = s.count(old)
         if n != 1:
             raise SystemExit(f"{rel}: expected one match, got {n}: {old[:80]!r}")
         s = s.replace(old, new)
-    p.write_text(s)
+    p.write_text(s, encoding="utf-8")
 
 edit("crates/fm1-plugin/src/lib.rs", [
 ("""/// A flash sector the firmware wrote, saved with the project.
