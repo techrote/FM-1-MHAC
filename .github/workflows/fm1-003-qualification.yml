@@ -783,7 +783,7 @@ jobs:
               need(not accepted(dict(positive, **{key:value})), "negative fixture "+key)
           for key in positive:
               need(not accepted({k:v for k,v in positive.items() if k!=key}), "missing field "+key)
-          print("no_jt_roundtrip_selector_selftest=13/13 PASS", flush=True)
+          print("no_jt_roundtrip_selector_selftest=14/14 PASS", flush=True)
           need(run("git","-C",up,"rev-parse","HEAD").decode().strip()==ce.PIN, "wrong upstream")
           need(not run("git","-C",up,"status","--porcelain").strip(), "dirty upstream")
           need(ce.digest(archive)==ce.TOOL, "wrong toolchain archive")
