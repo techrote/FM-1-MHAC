@@ -74,7 +74,8 @@ def label_ranges(labels, text_addr, text_bytes, rows):
     ranges=[]
     for i,(addr,name) in enumerate(labels):
         if not name.startswith(".Ljta"): continue
-        end=labels[i+1][0] if i+1 < len(labels) else text_addr+len(text_bytes)
+        greater=[a for a,_ in labels if a > addr]
+        end=min(greater) if greater else text_addr+len(text_bytes)
         size=end-addr
         if size < 12 or size % 4: continue
         off=addr-text_addr
@@ -136,7 +137,9 @@ def screen(path: Path, tc: Path):
         if re.search(r"\b(?:0x)?ffc[0-9a-f]{5}\b",r["line"],re.I): rom.append(r["line"])
         for val in re.findall(r"=\s*(-?\d+)\s*(?:<|$)",r["line"]):
             if 0xFFC00000 <= (int(val)&0xffffffff) < 0xFFD00000 and r["line"] not in rom: rom.append(r["line"])
-    receipt={"elf":path.name,"legacy_unknown_rows":len(unknown),"classified_data_rows":len(classified),
+    receipt={"elf":path.name,"legacy_unknown_rows":len(unknown),"recognized_ranges":[
+                 {"kind":r["kind"],"start":hex(r["start"]),"end":hex(r["end"])} for r in ranges],
+             "classified_data_rows":len(classified),
              "unresolved_unknown_rows":len(unresolved),"classified":classified,"unresolved":unresolved,
              "ram_calls":calls,"rom_hits":rom,
              "status":"PASS" if not unresolved and not calls and not rom else "HOLD"}
