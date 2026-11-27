@@ -547,21 +547,65 @@ jobs:
                       sp.run(["rustup", "run", "1.95.0", "cargo", "build", "--release",
                               "--offline", "--locked", "--manifest-path", str(strict/"Cargo.toml")], check=True)
                       exe = strict/"target/release/strict_scope"
+                      import hashlib
+                      # strict_scope deliberately selects candidate panel behavior by filename.
+                      # Preserve the original witness, and stage byte-identical inputs under its
+                      # established candidate.elf basename in separate disposable directories.
+                      staged = []
+                      for label, image in (("control", control), ("no-jt", elf)):
+                          directory = root/label
+                          directory.mkdir()
+                          candidate = directory/"candidate.elf"
+                          shutil.copyfile(image, candidate)
+                          need(candidate.read_bytes() == image.read_bytes(), "staged ELF mismatch")
+                          staged.append((label, candidate))
+                      need(staged[0][1] != staged[1][1], "aliased candidate paths")
+                      need(ce.digest(staged[0][1]) == expected, "staged control identity mismatch")
+                      need(ce.digest(staged[1][1]) == ce.digest(elf), "staged diagnostic identity mismatch")
+                      from panel_inverse import SPAN
+                      def compare_pcm(a, b):
+                          need(a and b and len(a)%4 == 0 and len(b)%4 == 0, "invalid stereo PCM")
+                          first = next((i for i, (x,y) in enumerate(zip(a,b)) if x != y), None)
+                          if first is None and len(a) != len(b):
+                              first = min(len(a),len(b))
+                          return a == b, None if first is None else first//4
+                      need(compare_pcm(b"1234",b"1234") == (True,None), "equal fixture")
+                      need(compare_pcm(b"1234abcd",b"1234abce") == (False,1), "sample mismatch fixture")
+                      need(compare_pcm(b"1234",b"1234abcd") == (False,1), "length mismatch fixture")
+                      all_exact = True
                       for part, mode, preset in (("puya", 0, 3), ("uc25hq80", 0, 9), ("puya", 2, 9)):
-                          captures = []
-                          for label, image in (("control", control), ("no-jt", elf)):
+                          captures, aligned, bounds = [], [], []
+                          for label, image in staged:
                               prefix = root/f"{part}-{mode}-{preset}-{label}"
                               env = dict(os.environ, FM1_PANEL_MODE=str(mode), FM1_PANEL_PRESET=str(preset),
                                          FM1_PCM_CAPTURE_PREFIX=str(prefix))
                               sp.run([str(exe), str(image), part, "800000000"],
                                      env=env, check=True, timeout=60)
-                              sp.run([sys.executable, str(here/"panel_inverse.py"), str(prefix),
-                                      str(mode), str(preset)], check=True, timeout=30)
-                              captures.append(prefix.with_suffix(".pcm").read_bytes())
-                          need(captures[0] and captures[0] == captures[1], "modeled PCM mismatch")
-                          import hashlib
+                              inverse = sp.check_output([sys.executable, str(here/"panel_inverse.py"), str(prefix),
+                                                        str(mode), str(preset)], timeout=30, text=True)
+                              print(inverse, end="", flush=True)
+                              origins = re.findall(r"\borigin_frame=(\d+)\b", inverse)
+                              need(len(origins)==1, "missing unique acoustic origin")
+                              pcm = prefix.with_suffix(".pcm").read_bytes()
+                              capture_bounds = tuple(map(int,prefix.with_suffix(".bounds").read_text().split()))
+                              offset = 4*int(origins[0])
+                              # Two phrases of SPAN int16 samples each; alignment is diagnostic
+                              # only and never substitutes for the complete PCM identity gate.
+                              stop = offset+4*SPAN
+                              need(0 <= offset < stop <= len(pcm), "invalid phrase span")
+                              captures.append(pcm)
+                              aligned.append(pcm[offset:stop])
+                              bounds.append(capture_bounds)
+                          exact, first = compare_pcm(*captures)
+                          phrase_exact, phrase_first = compare_pcm(*aligned)
+                          all_exact = all_exact and exact
                           print("no_jt_pcm " + json.dumps({"part":part,"mode":mode,"preset":preset,
-                              "bytes":len(captures[0]),"sha256":hashlib.sha256(captures[0]).hexdigest(),
-                              "exact":True,"installation_authorized":False}), flush=True)
+                              "bytes":[len(c) for c in captures],
+                              "sha256":[hashlib.sha256(c).hexdigest() for c in captures],
+                              "bounds":bounds,"first_difference_frame":first,
+                              "aligned_two_phrases_exact":phrase_exact,
+                              "aligned_first_difference_frame":phrase_first,
+                              "exact":exact,"installation_authorized":False}), flush=True)
+                      need(all_exact, "modeled PCM mismatch")
           PY
 # No package, no binary publication or physical device access.
