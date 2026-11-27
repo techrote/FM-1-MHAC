@@ -244,13 +244,25 @@ fn boot_raw(image: &[u8], entry: u32, mhz: u64, lcd_timed: bool) -> Result<Machi
             }
         }
 """),
-("""                    save_sectors(mm, &mut saved, &params);
+("""                if last_flash.elapsed() >= Duration::from_secs(2) {
+                    last_flash = Instant::now();
+                    save_sectors(mm, &mut saved, &params);
+                }
 """,
-"""                    if active_pkg.is_some() { save_sectors(mm, &mut saved, &params); }
+"""                if last_flash.elapsed() >= Duration::from_secs(2) {
+                    last_flash = Instant::now();
+                    if active_pkg.is_some() { save_sectors(mm, &mut saved, &params); }
+                }
 """),
-("""            save_sectors(mm, &mut saved, &params);
+("""        if last_flash.elapsed() >= Duration::from_secs(2) {
+            last_flash = Instant::now();
+            save_sectors(mm, &mut saved, &params);
+        }
 """,
-"""            if active_pkg.is_some() { save_sectors(mm, &mut saved, &params); }
+"""        if last_flash.elapsed() >= Duration::from_secs(2) {
+            last_flash = Instant::now();
+            if active_pkg.is_some() { save_sectors(mm, &mut saved, &params); }
+        }
 """),
 ("""            let name = params.firmware.lock().unwrap().name.clone();
             match crate::wav::Wav::create(if name.is_empty() { "fm1" } else { &name }) {""",
