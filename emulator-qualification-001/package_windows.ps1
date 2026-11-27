@@ -28,8 +28,12 @@ foreach ($f in @("app.c","scope_weave.h","qualify_target.sh","qualify_link.sh"))
 }
 Copy-Item (Join-Path $root "emulator-qualification-001\elf_to_xip.py") $source
 Copy-Item (Join-Path $root "emulator-qualification-001\analyze_wav.py") $source
-git -C $d archive --format=zip --output=(Join-Path $source ("dinghy-" + $dinghyPin + ".zip")) $dinghyPin
-git -C $emu archive --format=zip --output=(Join-Path $source ("fm1-emu-" + $pin + ".zip")) $pin
+$dinghyArchive = Join-Path $source ("dinghy-" + $dinghyPin + ".zip")
+$emuArchive = Join-Path $source ("fm1-emu-" + $pin + ".zip")
+git -C $d archive --format=zip -o $dinghyArchive $dinghyPin
+if ($LASTEXITCODE -ne 0) { throw "Dinghy source archive failed" }
+git -C $emu archive --format=zip -o $emuArchive $pin
+if ($LASTEXITCODE -ne 0) { throw "emulator source archive failed" }
 
 $run = @(
   "@echo off",
