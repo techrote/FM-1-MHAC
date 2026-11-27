@@ -740,4 +740,109 @@ jobs:
               need(not failed,"alternative qualification HOLD: "+str(failed))
               print("alternative_matrix=PASS 18 modeled capture comparisons; no installation authorization",flush=True)
           PY
+
+      - name: Alternative no-jump-table exact textual assembly provenance (diagnostic only)
+        if: ${{ !cancelled() && steps.policy_link.outcome == 'success' }}
+        working-directory: experiments/scope-weave-005
+        timeout-minutes: 6
+        run: |
+          set -eu
+          python3 - <<'PY'
+          import json, os, shutil, subprocess as sp, tempfile
+          from pathlib import Path
+          import audit_elf as audit
+          import compiler_evidence as ce
+          
+          tmp = Path(os.environ["RUNNER_TEMP"])
+          up, archive, tc = tmp/"dinghy", tmp/"pi32v2.tar.xz", tmp/"audit-toolchain/bin"
+          here = Path.cwd()
+          expected = {
+              "baseline": "5dd622e2af4bfaffd78f9621392a646c828c5e421b93e74aa41cd3fb9e6b943d",
+              "scope": "90e098ef48f757e40f1828efd62a5c6014e9d84451b54fa983aee5325e8e0eeb",
+              "context": "0bde51e6241aa8a4f444872ac8a9708ea3d3fd52946c95aced2a10861c149093",
+              "policy": "8fc8a2656886133b6a7367381cb03e13af86614aaa4cd477b66f1f5a98b10f61",
+          }
+          def run(*args, cwd=None):
+              return sp.check_output([str(a) for a in args], cwd=cwd, timeout=60)
+          def need(ok, msg):
+              if not ok:
+                  raise ValueError(msg)
+          def accepted(row):
+              # A route must genuinely traverse emitted assembly; matching direct C
+              # compilation is a control, not an assembly-provenance witness.
+              return (row.get("route", "").startswith("assembler-")
+                      and row.get("compile_exit") == 0 and row.get("link_exit") == 0
+                      and row.get("object_exact") is True and row.get("elf_exact") is True
+                      and row.get("load_segments_equal") is True)
+          positive = dict(route="assembler-default", compile_exit=0, link_exit=0,
+                          object_exact=True, elf_exact=True, load_segments_equal=True)
+          need(accepted(positive), "positive acceptance fixture")
+          for key, value in [("route","direct-no-relax-all"),("route","driver-save-temps"),
+                             ("compile_exit",1),("link_exit",1),("object_exact",False),
+                             ("elf_exact",False),("load_segments_equal",False)]:
+              need(not accepted(dict(positive, **{key:value})), "negative fixture "+key)
+          for key in positive:
+              need(not accepted({k:v for k,v in positive.items() if k!=key}), "missing field "+key)
+          print("no_jt_roundtrip_selector_selftest=13/13 PASS", flush=True)
+          need(run("git","-C",up,"rev-parse","HEAD").decode().strip()==ce.PIN, "wrong upstream")
+          need(not run("git","-C",up,"status","--porcelain").strip(), "dirty upstream")
+          need(ce.digest(archive)==ce.TOOL, "wrong toolchain archive")
+          target = ["-target","pi32v2","-mcpu=ac791n"]
+          flags = target+["-Os","-ffunction-sections","-fno-builtin","-Wall",
+                          "-Wno-unused-function","-Ifirmware/hal","-Ifirmware/src","-Ifirmware/gen",
+                          '-DAPP_VER="dev"','-DFELUCCA_ID="FM-1_990"','-fno-jump-tables']
+          held = []
+          with tempfile.TemporaryDirectory(prefix="fm1-alt-roundtrip-") as t:
+              root = Path(t)
+              src = root/"src"
+              src.mkdir()
+              (root/"source.tar").write_bytes(run("git","-C",up,"archive",ce.PIN))
+              run("tar","-xf",root/"source.tar","-C",src)
+              startup=[]
+              for name in ("firmware/crt0.S","firmware/hal/fm1_vec.S","firmware/hal/fm1_isr.S"):
+                  obj=root/(Path(name).stem+".o")
+                  run(tc/"clang",*target,"-c",name,"-o",obj,cwd=src)
+                  startup.append(obj)
+              link=["--gc-sections","-e","_start","-T","firmware/app.ld",*startup]
+              for variant, digest in expected.items():
+                  if variant!="baseline":
+                      local=here if variant=="scope" else tmp/(variant+"-variant")
+                      shutil.copyfile(local/"app.c",src/"firmware/src/dinghy.c")
+                      shutil.copyfile(local/"scope_weave.h",src/"firmware/src/scope_weave.h")
+                  source="firmware/src/dinghy.c"
+                  direct_obj,direct_elf,asm=(root/(variant+s) for s in (".o",".elf",".s"))
+                  run(tc/"clang",*flags,"-c",source,"-o",direct_obj,cwd=src)
+                  run(tc/"ld.lld",*link,direct_obj,"-o",direct_elf,cwd=src)
+                  need(ce.digest(direct_elf)==digest,variant+" alternative ELF differs from modeled evidence")
+                  _,screen_hold=audit.audit(direct_elf,tc)
+                  need(not screen_hold,variant+" unchanged static screen HOLD")
+                  run(tc/"clang",*flags,"-S",source,"-o",asm,cwd=src)
+                  # Exact comparison of default textual assembly path and existing
+                  # relaxation probes. No waiver based on equivalent section sizes.
+                  o,e=(root/(variant+"-default"+s) for s in (".o",".elf"))
+                  a=sp.run([str(tc/"clang"),*target,"-x","assembler","-c",str(asm),"-o",str(o)],
+                           cwd=src,capture_output=True,timeout=60)
+                  row={"route":"assembler-default","compile_exit":a.returncode}
+                  if a.returncode==0:
+                      b=sp.run([str(x) for x in [tc/"ld.lld",*link,o,"-o",e]],
+                               cwd=src,capture_output=True,timeout=60)
+                      row["link_exit"]=b.returncode
+                      if b.returncode==0:
+                          od=ce.elf_delta(direct_obj.read_bytes(),o.read_bytes())
+                          ed=ce.elf_delta(direct_elf.read_bytes(),e.read_bytes())
+                          row.update(object_exact=od["exact"],elf_exact=ed["exact"],
+                                     load_segments_equal=ed["load_segments_equal"])
+                  routes=[row]+ce.relaxation_probe(tc/"clang",tc/"ld.lld",target,flags,src,root,
+                                                   variant,asm,link,direct_obj,direct_elf)
+                  matches=[x["route"] for x in routes if accepted(x)]
+                  prof=ce.elf_profile(direct_elf.read_bytes())
+                  sections={x[0]:x[4] for x in prof["sections"] if x[2]&2}
+                  print("no_jt_roundtrip "+json.dumps({"variant":variant,"elf_sha256":digest,
+                        "default_route":row,"exact_textual_routes":matches,"section_bytes":sections,
+                        "installation_authorized":False},sort_keys=True),flush=True)
+                  if not matches:
+                      held.append(variant)
+          need(not held,"alternative assembly provenance HOLD: "+str(held))
+          print("no_jt_roundtrip=PASS exact emitted-assembly routes for all four ELFs; installation HOLD",flush=True)
+          PY
 # No package, no binary publication or physical device access.
