@@ -21,12 +21,18 @@ $receiptImage = Get-ChildItem (Join-Path $root "handoff") -Recurse -Filter "rece
 if (-not $imageFile -or -not $phaseImage -or -not $receiptImage) { throw "one or more XIP handoffs missing" }
 $out = Join-Path $root "FM1-MHAC-emulator-evaluator-windows-x64"
 $source = Join-Path $out "source"
-New-Item -ItemType Directory -Force $out,$source | Out-Null
+$demos = Join-Path $out "demos"
+New-Item -ItemType Directory -Force $out,$source,$demos | Out-Null
 Copy-Item (Join-Path $emu "target\release\fm1-live.exe") $out
 Copy-Item (Join-Path $emu "target\release\fm1-emu.exe") $out
 Copy-Item $imageFile.FullName (Join-Path $out "scope-weave.xip.bin")
 Copy-Item $phaseImage.FullName (Join-Path $out "phase-debt.xip.bin")
 Copy-Item $receiptImage.FullName (Join-Path $out "receipt-loom.xip.bin")
+foreach ($demo in @("p3.wav","p9.wav","phase-debt.wav","receipt-loom.wav")) {
+  $demoPath = Join-Path $results $demo
+  if (-not (Test-Path $demoPath)) { throw "missing demo WAV $demo" }
+  Copy-Item $demoPath $demos
+}
 Copy-Item (Join-Path $root "emulator-qualification-001\README.md") (Join-Path $out "README.md")
 Copy-Item (Join-Path $emu "LICENSE") (Join-Path $out "LICENSE-fm1-emu-MIT.txt")
 Copy-Item (Join-Path $d "LICENSE") (Join-Path $out "LICENSE-dinghy-GPL-3.0.txt")
@@ -85,6 +91,25 @@ $bench = @(
   "pause"
 )
 $bench | Set-Content -Encoding ascii (Join-Path $out "benchmark-scope-weave.cmd")
+$chooser = @(
+  "@echo off",
+  "cd /d `"%~dp0`"",
+  ":menu",
+  "cls",
+  "echo FM1-MHAC virtual instruments",
+  "echo   1. Phase Debt",
+  "echo   2. Receipt Loom",
+  "echo   3. Scope Weave",
+  "echo   4. Scope Weave (UC25HQ80 flash model)",
+  "echo   Q. Quit",
+  "choice /c 1234Q /n /m `"Select: `"" ,
+  "if errorlevel 5 exit /b 0",
+  "if errorlevel 4 call run-scope-weave-uc25hq80.cmd & goto menu",
+  "if errorlevel 3 call run-scope-weave.cmd & goto menu",
+  "if errorlevel 2 call run-receipt-loom.cmd & goto menu",
+  "if errorlevel 1 call run-phase-debt.cmd & goto menu"
+)
+$chooser | Set-Content -Encoding ascii (Join-Path $out "choose-instrument.cmd")
 
 $prov = @(
   "EMULATOR-QUALIFICATION-001",
@@ -97,6 +122,8 @@ $prov = @(
   "scope-weave.xip.bin, phase-debt.xip.bin and receipt-loom.xip.bin are bare XIP images for virtual execution only.",
   "No .fwsc, updater, flash writer, recovery image, or physical-install tool is included.",
   "The separate physical-install HOLD is therefore unchanged.",
+  "This is an owner-directed evaluator artifact, not a public firmware release.",
+  "Confirm the original FM1-MHAC code licensing/redistribution decision before broader redistribution.",
   "",
   "Corresponding source for all GPL-derived target images is bundled under source\.",
   "The exact emulator source archive and MIT license are bundled as well."
