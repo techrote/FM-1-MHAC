@@ -65,6 +65,7 @@ jobs:
           git clone --no-checkout https://github.com/joakimeriksson/fm1-emu.git "$env:RUNNER_TEMP/fm1-emu"
           git -C "$env:RUNNER_TEMP/fm1-emu" checkout 736aded65c8e2e9d652cf595fca248734483a877
           python raw-xip-virtual-host-001/patch_fm1_emu.py "$env:RUNNER_TEMP/fm1-emu"
+          if ($LASTEXITCODE) { throw "raw-XIP patch failed" }
           New-Item -ItemType Directory -Force "$env:RUNNER_TEMP/fm1-emu/crates/fm1-plugin/tests/fixtures" | Out-Null
           Copy-Item raw-xip-virtual-host-001/raw_xip.rs "$env:RUNNER_TEMP/fm1-emu/crates/fm1-plugin/tests/raw_xip.rs"
           Copy-Item raw-images/scope-weave.xip.bin "$env:RUNNER_TEMP/fm1-emu/crates/fm1-plugin/tests/fixtures/scope-weave.xip.bin"
@@ -77,7 +78,12 @@ jobs:
       - name: Full plugin unit/engine tests
         shell: pwsh
         run: |
-          rustup run 1.95.0 cargo test --manifest-path "$env:RUNNER_TEMP/fm1-emu/crates/fm1-plugin/Cargo.toml" --release --lib
+          Set-Location "$env:RUNNER_TEMP/fm1-emu"
+          node tools/fetch_firmwares.mjs felucca
+          if ($LASTEXITCODE -or -not (Test-Path "reference/firmwares/felucca.fwsc")) { throw "Felucca regression fixture missing" }
+          node tools/felucca_is_hashed.mjs
+          if ($LASTEXITCODE) { throw "Felucca fixture identity check failed" }
+          rustup run 1.95.0 cargo test --manifest-path "crates/fm1-plugin/Cargo.toml" --release --lib
       - name: Build CLAP and VST3
         shell: pwsh
         run: |
@@ -101,13 +107,16 @@ jobs:
         run: |
           $out="$env:GITHUB_WORKSPACE/RAW-XIP-VIRTUAL-HOST-Windows-x64"
           New-Item -ItemType Directory -Force "$out/images","$out/source" | Out-Null
-          Copy-Item "$env:RUNNER_TEMP/fm1-emu/target/plugin/FM-1.clap" "$out/FM-1-RAW-XIP.clap"
-          Copy-Item "$env:RUNNER_TEMP/fm1-emu/target/plugin/FM-1.vst3" "$out/FM-1-RAW-XIP.vst3" -Recurse
+          Copy-Item "$env:RUNNER_TEMP/fm1-emu/target/plugin/FM-1.clap" "$out/FM-1.clap"
+          Copy-Item "$env:RUNNER_TEMP/fm1-emu/target/plugin/FM-1.vst3" "$out/FM-1.vst3" -Recurse
           Copy-Item raw-images/* "$out/images"
           Copy-Item raw-xip-virtual-host-001/patch_fm1_emu.py "$out/source"
           Copy-Item raw-xip-virtual-host-001/README.md "$out/README.md" -ErrorAction SilentlyContinue
           @("Pinned fm1-emu: 736aded65c8e2e9d652cf595fca248734483a877","Development-only raw XIP host; no .fwsc or physical installer.") | Set-Content "$out/PROVENANCE.txt"
-          Get-ChildItem "$out" -Recurse -File | ForEach-Object { "$(Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()  $($_.FullName.Substring($out.Length+1))" } | Set-Content "$out/SHA256SUMS.txt"
+          Get-ChildItem "$out" -Recurse -File | Sort-Object FullName | ForEach-Object {
+            $h=(Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$h  $($_.FullName.Substring($out.Length+1))"
+          } | Set-Content "$out/SHA256SUMS.txt"
       - uses: actions/upload-artifact@v4
         with:
           name: RAW-XIP-VIRTUAL-HOST-Windows-x64
