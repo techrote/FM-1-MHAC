@@ -5,7 +5,6 @@
  * Retained gaps: exact zero. Erased slots: ignored, NOT silence.
  * No heap, floats, retained PCM, device I/O or forced unique answer. */
 #include "scope_weave.h"
-#include <string.h>
 typedef struct { int32_t ln,ld,hn,hd; } rx_gain;
 typedef struct {
     rx_gain slot[6][10];
@@ -14,6 +13,13 @@ typedef struct {
     uint16_t offset;
     uint8_t slot_index,observed,failed;
 } scope_rx;
+/* Target toolchain has freestanding stdint.h but no libc string.h.
+ * Volatile unsigned-char stores deliberately prevent lowering this bounded
+ * reset to an implicit memset call. Only used at initialization/slot start. */
+static void rx_zero(void *ptr,unsigned n){
+    volatile unsigned char *p=ptr;
+    while(n--)*p++=0;
+}
 static rx_gain rx_prior(void){return (rx_gain){1,8,5,4};}
 /* Bounds: a/c in [-32770,32770], b/d in [1,2048].
  * sw_render produces at most 2048 in absolute value in a zeroed frame.
@@ -36,7 +42,7 @@ static void rx_meet(rx_gain *a,rx_gain b){
     if(rx_gt(a->hn,a->hd,b.hn,b.hd)){a->hn=b.hn;a->hd=b.hd;}
 }
 int scope_rx_init(scope_rx *s,unsigned rate,unsigned observed){
-    memset(s,0,sizeof *s);
+    rx_zero(s,sizeof *s);
     if(rate>26||observed>63){s->failed=1;return -1;}
     s->tick=10000u-200u*rate;s->observed=(uint8_t)observed;
     for(unsigned j=0;j<6;j++)for(unsigned t=0;t<10;t++)s->slot[j][t]=rx_prior();
@@ -50,7 +56,7 @@ int scope_rx_feed(scope_rx *s,const int16_t *pcm,uint32_t n){
         unsigned j=s->slot_index,k=s->offset;
         if(!(s->observed&(1u<<j)))continue;
         if(k>=SW_ENV){if(pcm[2*i]||pcm[2*i+1]){s->failed=1;return -1;}continue;}
-        if(!k){memset(s->tone,0,sizeof s->tone);for(unsigned t=0;t<9;t++)sw_trigger(&s->tone[t],t);}
+        if(!k){rx_zero(s->tone,sizeof s->tone);for(unsigned t=0;t<9;t++)sw_trigger(&s->tone[t],t);}
         for(unsigned t=0;t<10;t++){
             rx_gain *g=&s->slot[j][t];if(!rx_live(*g))continue;
             int32_t x[2]={0};if(t<9)sw_render(&s->tone[t],x,1,0,0,26,0);
@@ -74,6 +80,7 @@ int scope_rx_finish(const scope_rx *s,unsigned modes,uint32_t masks[3]){
     return count;
 }
 #ifdef SCOPE_RX_TEST
+#include <string.h>
 #include <assert.h>
 #include <stdio.h>
 static int32_t source[120000];static int16_t input[120000];
@@ -103,6 +110,14 @@ static void check(unsigned p,unsigned m,unsigned rate,unsigned obs,unsigned gain
 }
 int main(void){
     unsigned full=0,erasure=0;scope_rx s;uint32_t got[3];
+    /* Dirty-state reset, including failure latch and all tone storage. */
+    scope_rx clean;
+    memset(&s,0xa5,sizeof s);memset(&clean,0,sizeof clean);
+    assert(!scope_rx_init(&s,26,63)&&!scope_rx_init(&clean,26,63));
+    assert(!memcmp(&s,&clean,sizeof s));
+    assert(scope_rx_feed(&s,0,1)==-1);
+    assert(!scope_rx_init(&s,26,63)&&!memcmp(&s,&clean,sizeof s));
+    puts("dirty_state_reset=PASS");
     for(unsigned m=0;m<3;m++)for(unsigned p=0;p<27;p++){check(p,m,p%3==0?0:p%3==1?13:26,63,p%3,p%2?257:1);full++;}
     for(unsigned m=0;m<3;m++)for(unsigned mask=0;mask<64;mask++){check(3,m,26,mask,mask%3,1024);erasure++;}
     for(unsigned r=0;r<=26;r++)for(unsigned m=0;m<3;m++){
