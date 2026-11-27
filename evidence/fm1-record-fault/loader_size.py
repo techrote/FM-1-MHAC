@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure a pinned original loader in a disposable checkout. No install, no package,
+"""Measure a pinned original or corrective loader in a disposable checkout. No install, no package,
 no binary output retained. Alternative pi32v2 toolchain, not the vendor compiler.
 """
 import argparse
@@ -49,7 +49,7 @@ def selftest():
     print("81924 layout assertions PASS; synthetic only")
 
 
-def measure(up, archive):
+def measure(up, archive, corrective=False):
     up, archive = up.resolve(), archive.resolve()
     if run("git", "-C", up, "rev-parse", "HEAD").decode().strip() != PIN:
         raise ValueError("wrong upstream pin")
@@ -65,6 +65,16 @@ def measure(up, archive):
         tar = root / "source.tar"
         tar.write_bytes(run("git", "-C", up, "archive", PIN))
         run("tar", "-xf", tar, "-C", source)
+        if corrective:
+            import full_session as witness
+            from finalization_candidate import patch_core
+            core = source / "firmware/loader/ldr_core.c"
+            raw = core.read_bytes()
+            if witness.PIN != PIN or witness.blob(raw) != witness.BLOBS["firmware/loader/ldr_core.c"]:
+                raise ValueError("wrong corrective source identity")
+            patched = patch_core(raw.decode()).encode()
+            core.write_bytes(patched)
+            print("corrective_core_sha256=" + digest(patched), flush=True)
         run("tar", "-xJf", archive, "-C", tc, "--strip-components=1")
         bin = tc / "bin"
         cc = bin / "clang"
@@ -100,10 +110,13 @@ def measure(up, archive):
         result.update(raw_bytes=len(a), raw_sha256=digest(a),
                       wrapper_sha256=digest(wrapped), upstream=PIN,
                       compiler_archive_sha256=TC_HASH,
-                      reproducible_raw=True, status="HOLD")
+                      reproducible_raw=True, variant="corrective" if corrective else "original",
+                      status="HOLD")
         print(json.dumps(result, sort_keys=True), flush=True)
         if not result["first_stage_size_limit_met"]:
             raise ValueError("first-stage limit exceeded")
+        if corrective and not result["record_sector_disjoint"]:
+            raise ValueError("corrective loader overlaps record sector")
     # No target binaries retained or uploaded, no device access.
 
 
@@ -112,11 +125,12 @@ def main():
     parser.add_argument("upstream", nargs="?", type=pathlib.Path)
     parser.add_argument("archive", nargs="?", type=pathlib.Path)
     parser.add_argument("--selftest", action="store_true")
+    parser.add_argument("--corrective", action="store_true", help="measure existing host-tested corrective core; no installation")
     args = parser.parse_args()
     if args.selftest:
         selftest()
     elif args.upstream and args.archive:
-        measure(args.upstream, args.archive)
+        measure(args.upstream, args.archive, args.corrective)
     else:
         parser.error("supply pinned checkout and toolchain archive, or --selftest")
 

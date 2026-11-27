@@ -87,6 +87,12 @@ jobs:
           set -eu
           python3 evidence/fm1-record-fault/loader_size.py --selftest
           python3 evidence/fm1-record-fault/loader_size.py "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz"
+      - name: Corrective loader target staging footprint (no package or installation)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 3
+        run: |
+          set -eu
+          python3 evidence/fm1-record-fault/loader_size.py --corrective "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz"
       - name: Full pinned loader host fault witnesses (installation HOLD)
         timeout-minutes: 4
         run: |
@@ -455,10 +461,10 @@ jobs:
         run: |
           set -eu
           python3 compiler_evidence.py "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/scope-objects" "$RUNNER_TEMP/scope-repeat"
-      - name: No-jump-table differential target audit (diagnostic only)
+      - name: No-jump-table differential target audit and modeled PCM (diagnostic only)
         if: ${{ !cancelled() && steps.link.outcome == 'success' }}
         working-directory: experiments/scope-weave-005
-        timeout-minutes: 3
+        timeout-minutes: 7
         run: |
           set -eu
           python3 - "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/audit-toolchain/bin" "$RUNNER_TEMP/scope-objects" <<'PY'
@@ -528,5 +534,34 @@ jobs:
                       "unknown_rows":len(unknown), "unchanged_screen_hold":screen_hold,
                       "installation_authorized":False,"status":"HOLD"
                   }, sort_keys=True), flush=True)
+                  need(not screen_hold and not unknown, "diagnostic static screen regressed")
+                  if variant == "candidate":
+                      import os
+                      emu = Path(os.environ["RUNNER_TEMP"]) / "fm1-emu"
+                      strict = Path(os.environ["RUNNER_TEMP"]) / "scope-strict"
+                      need(run("git", "-C", emu, "rev-parse", "HEAD").decode().strip() ==
+                           "736aded65c8e2e9d652cf595fca248734483a877", "wrong emulator pin")
+                      need(not run("git", "-C", emu, "status", "--porcelain"), "dirty emulator")
+                      # Rebuild exact existing strict panel witness, not an instrumented emulator.
+                      shutil.copyfile(here/"strict_scope.rs", strict/"src/main.rs")
+                      sp.run(["rustup", "run", "1.95.0", "cargo", "build", "--release",
+                              "--offline", "--locked", "--manifest-path", str(strict/"Cargo.toml")], check=True)
+                      exe = strict/"target/release/strict_scope"
+                      for part, mode, preset in (("puya", 0, 3), ("uc25hq80", 0, 9), ("puya", 2, 9)):
+                          captures = []
+                          for label, image in (("control", control), ("no-jt", elf)):
+                              prefix = root/f"{part}-{mode}-{preset}-{label}"
+                              env = dict(os.environ, FM1_PANEL_MODE=str(mode), FM1_PANEL_PRESET=str(preset),
+                                         FM1_PCM_CAPTURE_PREFIX=str(prefix))
+                              sp.run([str(exe), str(image), part, "800000000"],
+                                     env=env, check=True, timeout=60)
+                              sp.run([sys.executable, str(here/"panel_inverse.py"), str(prefix),
+                                      str(mode), str(preset)], check=True, timeout=30)
+                              captures.append(prefix.with_suffix(".pcm").read_bytes())
+                          need(captures[0] and captures[0] == captures[1], "modeled PCM mismatch")
+                          import hashlib
+                          print("no_jt_pcm " + json.dumps({"part":part,"mode":mode,"preset":preset,
+                              "bytes":len(captures[0]),"sha256":hashlib.sha256(captures[0]).hexdigest(),
+                              "exact":True,"installation_authorized":False}), flush=True)
           PY
 # No package, no binary publication or physical device access.
