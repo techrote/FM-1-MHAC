@@ -24,7 +24,7 @@ $env:FM1_LCD_TIMED = "1"
 foreach ($preset in 3,9) {
   $wav = Join-Path $results ("p{0}.wav" -f $preset)
   $json = Join-Path $results ("p{0}.json" -f $preset)
-  $keys = "600:N$($preset),700:N$($preset)^,900:PLAY,1000:PLAY^,3600:HOME,3700:HOME^"
+  $keys = "600-700:N$($preset),900-1000:PLAY,3600-3700:HOME"
   & $emuExe --bin $image --entry 0x02000120 --ms 4500 --keys $keys --flash-chip p25q80 --wav $wav --quiet
   if ($LASTEXITCODE -ne 0) { throw "fm1-emu preset $preset failed" }
   python (Join-Path $root "emulator-qualification-001\analyze_wav.py") $wav --require-audio --silent-tail-ms 500 | Tee-Object -FilePath $json
