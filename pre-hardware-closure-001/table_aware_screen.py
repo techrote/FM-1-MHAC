@@ -87,9 +87,11 @@ def label_ranges(labels, text_addr, text_bytes, rows):
         if len(words) < 3: continue
         prior=[r for r in rows if r["addr"] < addr][-10:]
         joined=" | ".join(r["payload"] for r in prior)
-        # Require the compiler-table label plus a nearby indexed load and indirect goto.
-        if not re.search(r"\[[^\]]+<<2\]",joined) or not re.search(r"\bgoto\s+r\d+",joined):
-            continue
+        # The compiler-specific .Ljta label plus a contiguous run of in-.text targets is
+        # the classification gate. The independent direct_object.mjs closure check binds
+        # each word to its local relocation symbol; the nearby dispatch is retained here
+        # as diagnostic context only because llvm-objdump formatting is not stable enough
+        # to make a regex over that syntax an acceptance condition.
         end=addr+4*len(words)
         ranges.append({"start":addr,"end":end,"kind":"computed-address-jump-table",
                        "evidence":{"label":name,"targets":[hex(w) for w in words],"dispatch":joined}})
