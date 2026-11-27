@@ -455,4 +455,78 @@ jobs:
         run: |
           set -eu
           python3 compiler_evidence.py "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/scope-objects" "$RUNNER_TEMP/scope-repeat"
+      - name: No-jump-table differential target audit (diagnostic only)
+        if: ${{ !cancelled() && steps.link.outcome == 'success' }}
+        working-directory: experiments/scope-weave-005
+        timeout-minutes: 3
+        run: |
+          set -eu
+          python3 - "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/audit-toolchain/bin" "$RUNNER_TEMP/scope-objects" <<'PY'
+          import json, re, shutil, subprocess as sp, sys, tempfile
+          from pathlib import Path
+          import audit_elf as audit
+          import compiler_evidence as ce
+          up, archive, tc, reference = map(lambda p: Path(p).resolve(), sys.argv[1:])
+          here = Path.cwd()
+          def run(*a, cwd=None):
+              return sp.check_output([str(x) for x in a], cwd=cwd)
+          def need(ok, msg):
+              if not ok:
+                  raise ValueError(msg)
+          need(run("git", "-C", up, "rev-parse", "HEAD").decode().strip() == ce.PIN, "wrong upstream")
+          need(not run("git", "-C", up, "status", "--porcelain"), "dirty upstream")
+          need(ce.digest(archive) == ce.TOOL, "wrong toolchain archive")
+          flags = ["-target", "pi32v2", "-mcpu=ac791n"]
+          cflags = flags + ["-Os", "-ffunction-sections", "-fno-builtin", "-Wall",
+                            "-Wno-unused-function", "-Ifirmware/hal", "-Ifirmware/src",
+                            "-Ifirmware/gen", '-DAPP_VER="dev"', '-DFELUCCA_ID="FM-1_990"']
+          with tempfile.TemporaryDirectory(prefix="fm1-no-jt-") as t:
+              root = Path(t)
+              source = root / "source"
+              source.mkdir()
+              (root / "src.tar").write_bytes(run("git", "-C", up, "archive", ce.PIN))
+              run("tar", "-xf", root / "src.tar", "-C", source)
+              startup = []
+              for name in ("firmware/crt0.S", "firmware/hal/fm1_vec.S", "firmware/hal/fm1_isr.S"):
+                  obj = root / (Path(name).stem + ".o")
+                  run(tc/"clang", *flags, "-c", name, "-o", obj, cwd=source)
+                  startup.append(obj)
+              for variant, expected in ce.ELFS.items():
+                  if variant == "candidate":
+                      shutil.copyfile(here/"app.c", source/"firmware/src/dinghy.c")
+                      shutil.copyfile(here/"scope_weave.h", source/"firmware/src/scope_weave.h")
+                  def build(name, extra):
+                      obj, elf = root/(name+".o"), root/(name+".elf")
+                      run(tc/"clang", *cflags, *extra, "-c", "firmware/src/dinghy.c", "-o", obj, cwd=source)
+                      run(tc/"ld.lld", "--gc-sections", "-e", "_start", "-T",
+                          "firmware/app.ld", *startup, obj, "-o", elf, cwd=source)
+                      return obj, elf
+                  control_obj, control = build(variant+"-control", [])
+                  need(ce.digest(control) == expected == ce.digest(reference/(variant+".elf")), "control ELF mismatch")
+                  need(control_obj.read_bytes() == (reference/(variant+".o")).read_bytes(), "control object mismatch")
+                  try:
+                      obj, elf = build(variant+"-no-jt", ["-fno-jump-tables"])
+                  except sp.CalledProcessError as e:
+                      print(json.dumps({"variant":variant,"compile_or_link_exit":e.returncode,"status":"HOLD"}), flush=True)
+                      raise
+                  obj2, elf2 = build(variant+"-no-jt-repeat", ["-fno-jump-tables"])
+                  need(obj.read_bytes()==obj2.read_bytes() and elf.read_bytes()==elf2.read_bytes(), "diagnostic rebuild mismatch")
+                  asm = root/(variant+".s")
+                  run(tc/"clang", *cflags, "-fno-jump-tables", "-S", "firmware/src/dinghy.c", "-o", asm, cwd=source)
+                  rows = ce.lines(asm.read_text())
+                  dis = run(tc/"llvm-objdump", "-d", elf).decode()
+                  unknown = [line for line in dis.splitlines()
+                             if re.match(r"^\s*[0-9a-fA-F]+:", line) and re.search(r"<unknown>|\bunknown\b", line, re.I)]
+                  delta = ce.elf_delta(control.read_bytes(), elf.read_bytes())
+                  _, screen_hold = audit.audit(elf, tc)
+                  print("no_jt_diagnostic " + json.dumps({
+                      "variant":variant, "control_sha256":expected, "diagnostic_sha256":ce.digest(elf),
+                      "rebuild_exact":True, "changed_sections":len(delta["section_changes"]),
+                      "load_segments_equal":delta["load_segments_equal"],
+                      "assembly_tbb":sum(bool(re.match(r"^tbb\b", row)) for row in rows),
+                      "assembly_table_labels":sum(bool(re.match(r"^\.Ljta\w*:$", row)) for row in rows),
+                      "unknown_rows":len(unknown), "unchanged_screen_hold":screen_hold,
+                      "installation_authorized":False,"status":"HOLD"
+                  }, sort_keys=True), flush=True)
+          PY
 # No package, no binary publication or physical device access.
