@@ -92,7 +92,7 @@ def main():
             c_relax="-mrelax-all" in trace_c or "mno-relax" in trace_c.lower()
             s_relax="-mrelax-all" in trace_s or "mno-relax" in trace_s.lower()
             diagnosis=("textual route remains HOLD; direct C no-relax is reproducible, but no tested assembler route reproduces it. "
-                       "The driver traces differ in how relaxation control reaches code generation/assembly input.")
+                       "Reassembly uses cc1as; C/codegen options are unused there, and tested assembler-specific relaxation controls are unsupported or non-exact at this pin.")
             rep={"variant":variant,"direct_object_sha256":sha(direct),"direct_elf_sha256":sha(direct_elf),
                  "direct_repeat_exact":True,"exact_textual_routes":exact,"routes":rr,
                  "c_trace_mentions_relax_control":c_relax,"asm_trace_mentions_relax_control":s_relax,
