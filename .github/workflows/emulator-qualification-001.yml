@@ -35,8 +35,31 @@ jobs:
             ${{ runner.temp }}/inherited-audit.log
             ${{ runner.temp }}/results/**
 
+  legacy-instruments:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout emulator qualification tooling
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+      - name: Build and execute Phase Debt and Receipt Loom exact heads
+        shell: bash
+        run: bash emulator-qualification-001/ci_legacy.sh
+      - name: Upload legacy-instrument evidence and XIP images
+        uses: actions/upload-artifact@v4
+        with:
+          name: emulator-qualification-legacy
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/phase-debt.xip.bin
+            ${{ runner.temp }}/receipt-loom.xip.bin
+            ${{ runner.temp }}/legacy-results/**
+
   windows-evaluator:
-    needs: linux-qualification
+    needs: [linux-qualification, legacy-instruments]
     runs-on: windows-2025
     timeout-minutes: 50
     steps:
@@ -49,6 +72,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: emulator-qualification-linux
+          path: handoff
+      - name: Download Phase Debt and Receipt Loom handoff
+        uses: actions/download-artifact@v4
+        with:
+          name: emulator-qualification-legacy
           path: handoff
       - name: Execute native Windows emulator and fm1-live benchmark
         shell: pwsh
