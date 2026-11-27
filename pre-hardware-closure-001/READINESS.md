@@ -9,9 +9,9 @@ Frozen 2026-11-27 for PRE-HARDWARE-CLOSURE-001. This ledger distinguishes virtua
 | Scope Weave source | PR #6 `b8ce089a770945bd19d03204c536b85dbfced6af` | FROZEN / Draft | No further feature work planned before hardware. |
 | Target compile/link | #2/#4/#6 | PASS | Pinned pi32v2 LLVM builds deterministic ELF32 pi32v2 candidates with no undefined symbols. Not packaging or physical timing. |
 | Legacy linear static screen | #2/#4/#6 | EXPECTED FAIL | Linear disassembly interprets inline/computed tables and printable data as instructions. Preserved as a regression witness. |
-| Table/data-aware static screen | PRE-HARDWARE-CLOSURE-001 | PENDING CI | Must classify every legacy unknown row from structural table/string evidence while retaining RAM-call/ROM checks. |
+| Table/data-aware static screen | PRE-HARDWARE-CLOSURE-001 | PASS | All legacy unknown rows are structurally classified as the bounded `tbb` byte table, Scope `.Ljta0` local-target table, or the NUL-terminated `UNKNOWN FLASH` literal. No unresolved rows, RAM-text calls or ROM hits; first/repeat ELFs are exact. |
 | No-jump-table alternative | #6 | DIAGNOSTIC PASS / adoption HOLD | Zero unknown rows; 18/18 modeled cases and complete paired PCM receipts match controls. Loaded bytes differ from original candidates. |
-| Textual assembly round-trip | #6 + closure probe | HOLD | Direct `-mno-relax-all` build is exact; no textual assembler route has reproduced exact object/ELF identity. This is not waived by PCM equality. |
+| Textual assembly round-trip | #6 + closure probe | BOUNDED HOLD / diagnostic | Direct `-fno-jump-tables -mno-relax-all` object/ELF builds reproduce exact historical hashes. No tested `.s` → `cc1as` route reproduces them; C/codegen options are unused for assembly input and tested assembler-specific relaxation controls are unsupported or non-exact at this pin. This does not block the original jump-table candidates, whose table-aware static screen passes; the no-JT route remains diagnostic only. |
 | Strict emulator qualification | PR #8 `cc132a43...` | PASS | Phase Debt, Receipt Loom and Scope Weave execute with panel/LCD/audio witnesses across modeled flash parts. |
 | Native Windows virtual host | PR #8 | PASS | `fm1-live` raw-XIP host is practical and faster than real time. |
 | VST3/CLAP raw-XIP host | PR #10 `d820ad24...` | PASS | Raw-XIP plugin path, 31/31 regression and Steinberg 47/47 validation pass. |
@@ -25,7 +25,7 @@ Frozen 2026-11-27 for PRE-HARDWARE-CLOSURE-001. This ledger distinguishes virtua
 
 ## Programme disposition
 
-After this closure mission, manual FM1-MHAC feature development should pause until the FM-1 arrives. New emulator-only instruments or infrastructure should not be added merely because hardware evidence is unavailable.
+**PRE-HARDWARE DEVELOPMENT FREEZE:** manual FM1-MHAC feature development should now pause until the FM-1 arrives. New emulator-only instruments or infrastructure should not be added merely because hardware evidence is unavailable.
 
 Permitted pre-arrival maintenance is limited to fixing a concrete qualification defect in this frozen evidence, preserving build reproducibility, or preparing read-only owner evaluation tooling.
 
