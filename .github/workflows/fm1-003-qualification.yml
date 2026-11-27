@@ -81,6 +81,12 @@ jobs:
           git -C "$RUNNER_TEMP/dinghy" fetch --depth=1 origin 92f17b28f2d05f2f78fd1b160b58475d518902c8
           git -C "$RUNNER_TEMP/dinghy" checkout --detach FETCH_HEAD
           curl -fL --retry 1 --max-time 90 -o "$RUNNER_TEMP/pi32v2.tar.xz" https://github.com/jvitkauskas/pi32v2-llvm/releases/download/pi32v2-23.1.5-2/pi32v2-llvm-23.1.5-2-linux-x64.tar.xz
+      - name: Original loader staging footprint (no package or installation)
+        timeout-minutes: 3
+        run: |
+          set -eu
+          python3 evidence/fm1-record-fault/loader_size.py --selftest
+          python3 evidence/fm1-record-fault/loader_size.py "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz"
       - name: Full pinned loader host fault witnesses (installation HOLD)
         timeout-minutes: 4
         run: |
