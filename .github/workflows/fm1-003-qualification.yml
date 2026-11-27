@@ -1,0 +1,848 @@
+name: FM1-003 isolated native and target ELF qualification
+on:
+  pull_request:
+    paths:
+      - 'experiments/scope-weave-005/**'
+      - '.github/workflows/fm1-003-qualification.yml'
+permissions:
+  contents: read
+concurrency:
+  group: fm1-003-qualification
+  cancel-in-progress: true
+jobs:
+  qualify:
+    if: github.head_ref == 'fm1/005-scope-weave' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact public PR merge revision
+        run: |
+          set -eu
+          git init -q
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git fetch --depth=1 origin "$GITHUB_REF"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Native grammar and waveform falsifiers
+        working-directory: experiments/scope-weave-005
+        run: |
+          set -eu
+          for c in gcc clang; do
+            "$c" -std=c11 -O2 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all verify.c -o "$RUNNER_TEMP/scope-$c"
+            "$RUNNER_TEMP/scope-$c" "$RUNNER_TEMP/$c.wav"
+          done
+          cmp "$RUNNER_TEMP/gcc.wav" "$RUNNER_TEMP/clang.wav"
+          printf '%s\n' 'd0ef28f1703cb312f6da700acfb54ebdb8761192ad6daa48d9b629dd86929bea  gcc.wav' | (cd "$RUNNER_TEMP" && sha256sum -c -)
+      - name: Native optional streaming receiver (all rates and arithmetic bounds)
+        working-directory: experiments/scope-weave-005
+        run: |
+          set -eu
+          for c in gcc clang; do
+            "$c" -std=c11 -O2 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all -DSCOPE_RX_TEST scope_rx.c -o "$RUNNER_TEMP/rx-$c"
+            "$RUNNER_TEMP/rx-$c"
+          done
+      - name: Native exact acoustic inverse and panel fixture
+        working-directory: experiments/scope-weave-005
+        run: |
+          set -eu
+          python3 scope_inverse.py --cc gcc > "$RUNNER_TEMP/inverse-gcc.txt"
+          python3 scope_inverse.py --cc clang > "$RUNNER_TEMP/inverse-clang.txt"
+          cmp "$RUNNER_TEMP/inverse-gcc.txt" "$RUNNER_TEMP/inverse-clang.txt"
+          cat "$RUNNER_TEMP/inverse-gcc.txt"
+          grep -Fx 'native atlas+phrases sha256 5c7512256a5d91ac6ed00a30059174691461e5d31e4964fd13533dfbd23867f6' "$RUNNER_TEMP/inverse-gcc.txt"
+          python3 panel_inverse.py
+      - name: Native contextual panel and receiver inverse
+        working-directory: experiments/scope-weave-005
+        run: |
+          set -eu
+          for c in gcc clang; do
+            "$c" -std=c11 -O2 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all -DCP_TEST context_panel.c -o "$RUNNER_TEMP/context-$c"
+            "$RUNNER_TEMP/context-$c" "$RUNNER_TEMP/context-$c.pcm"
+            python3 context_inverse.py "$c" "$RUNNER_TEMP/context-$c.pcm" > "$RUNNER_TEMP/context-$c.txt"
+          done
+          cmp "$RUNNER_TEMP/context-gcc.pcm" "$RUNNER_TEMP/context-clang.pcm"
+          cmp "$RUNNER_TEMP/context-gcc.txt" "$RUNNER_TEMP/context-clang.txt"
+          cat "$RUNNER_TEMP/context-gcc.txt"
+          printf '%s\n' '6b0f12a7de94a7b5c4d75deaa625baf088ead075c7320b484f1aeb413d416d25  context-gcc.pcm' | (cd "$RUNNER_TEMP" && sha256sum -c -)
+      - name: Native acoustic edit equivalence and intentional retrigger
+        working-directory: experiments/scope-weave-005
+        run: |
+          set -eu
+          for c in gcc clang; do
+            "$c" -std=c11 -O2 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all policy_verify.c -o "$RUNNER_TEMP/policy-$c"
+            "$RUNNER_TEMP/policy-$c" "$RUNNER_TEMP/policy-$c.pcm"
+          done
+          cmp "$RUNNER_TEMP/policy-gcc.pcm" "$RUNNER_TEMP/policy-clang.pcm"
+      - name: Fetch pinned Dinghy and toolchain
+        run: |
+          set -eu
+          git init -q "$RUNNER_TEMP/dinghy"
+          git -C "$RUNNER_TEMP/dinghy" remote add origin https://github.com/zvenson/dinghy.git
+          git -C "$RUNNER_TEMP/dinghy" fetch --depth=1 origin 92f17b28f2d05f2f78fd1b160b58475d518902c8
+          git -C "$RUNNER_TEMP/dinghy" checkout --detach FETCH_HEAD
+          curl -fL --retry 1 --max-time 90 -o "$RUNNER_TEMP/pi32v2.tar.xz" https://github.com/jvitkauskas/pi32v2-llvm/releases/download/pi32v2-23.1.5-2/pi32v2-llvm-23.1.5-2-linux-x64.tar.xz
+      - name: Original loader staging footprint (no package or installation)
+        timeout-minutes: 3
+        run: |
+          set -eu
+          python3 evidence/fm1-record-fault/loader_size.py --selftest
+          python3 evidence/fm1-record-fault/loader_size.py "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz"
+      - name: Corrective loader target staging footprint (no package or installation)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 3
+        run: |
+          set -eu
+          python3 evidence/fm1-record-fault/loader_size.py --corrective "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz"
+      - name: Full pinned loader host fault witnesses (installation HOLD)
+        timeout-minutes: 4
+        run: |
+          set -eu
+          python3 evidence/fm1-record-fault/full_session.py "$RUNNER_TEMP/dinghy"
+      - name: Actual target compilation and ELF link
+        id: link
+        working-directory: experiments/scope-weave-005
+        run: |
+          set -eu
+          sh qualify_target.sh "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/scope-objects"
+          sh qualify_link.sh "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/scope-objects"
+      - name: Independent rebuild and inherited static audit
+        working-directory: experiments/scope-weave-005
+        run: |
+          set -eu
+          sh qualify_target.sh "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/scope-repeat"
+          sh qualify_link.sh "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/scope-repeat"
+          mkdir "$RUNNER_TEMP/audit-toolchain"
+          tar -xJf "$RUNNER_TEMP/pi32v2.tar.xz" -C "$RUNNER_TEMP/audit-toolchain" --strip-components=1
+          python3 audit_elf.py "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/audit-toolchain/bin" "$RUNNER_TEMP/scope-objects" "$RUNNER_TEMP/scope-repeat"
+      - name: Corrective host-only loader finalization (installation HOLD)
+        if: ${{ !cancelled() && steps.link.outcome == 'success' }}
+        timeout-minutes: 4
+        run: |
+          set -eu
+          python3 evidence/fm1-record-fault/finalization_candidate.py "$RUNNER_TEMP/dinghy"
+      - name: Optional streaming receiver target object (no firmware integration)
+        if: ${{ !cancelled() && steps.link.outcome == 'success' }}
+        working-directory: experiments/scope-weave-005
+        timeout-minutes: 2
+        run: |
+          set -eu
+          TC="$RUNNER_TEMP/audit-toolchain/bin"
+          test -x "$TC/clang"
+          "$TC/clang" -target pi32v2 -mcpu=ac791n -std=c11 -Os -ffreestanding -fno-builtin -Wall -Wextra -Werror -c scope_rx.c -o "$RUNNER_TEMP/scope-rx.o"
+          "$TC/llvm-readelf" -h "$RUNNER_TEMP/scope-rx.o"
+          "$TC/llvm-size" "$RUNNER_TEMP/scope-rx.o"
+          "$TC/llvm-nm" -u "$RUNNER_TEMP/scope-rx.o"
+          sha256sum scope_rx.c scope_weave.h "$RUNNER_TEMP/scope-rx.o"
+          echo 'Receiver target object only: no link, target execution, real-time budget or physical input claim.'
+      - name: Direct object provenance and map-enabled exact relink (HOLD preserved)
+        if: ${{ !cancelled() && steps.link.outcome == 'success' }}
+        working-directory: experiments/scope-weave-005
+        timeout-minutes: 3
+        run: |
+          set -eu
+          node direct_object.mjs --selftest
+          D="$RUNNER_TEMP/scope-direct-map"
+          mkdir "$D"
+          cp "$RUNNER_TEMP/scope-objects/baseline.o" "$RUNNER_TEMP/scope-objects/candidate.o" "$D/"
+          # Only add a map output to a disposable copy of the existing pinned linker script.
+          python3 - "$D/link.sh" <<'PY'
+          import sys
+          from pathlib import Path
+          source=Path("qualify_link.sh").read_text()
+          old='-o "$OUT/$n.elf"'
+          assert source.count(old)==1
+          Path(sys.argv[1]).write_text(source.replace(old,'-Map="$OUT/$n.map" '+old))
+          PY
+          sh "$D/link.sh" "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$D"
+          failed=0
+          for n in baseline candidate; do
+            kind="$n"
+            if test "$n" = candidate; then kind=scope; fi
+            if ! node direct_object.mjs "$kind" "$D/$n.o" "$RUNNER_TEMP/scope-objects/$n.elf" "$D/$n.elf" "$D/$n.map"; then
+              failed=1
+            fi
+          done
+          test "$failed" = 0
+      - name: Scope Weave strict modeled panel and acoustic inverse
+        if: ${{ !cancelled() && steps.link.outcome == 'success' }}
+        working-directory: experiments/scope-weave-005
+        timeout-minutes: 12
+        run: |
+          set -eu
+          P="$RUNNER_TEMP/scope-pcm"
+          mkdir "$P"
+          EMU="$RUNNER_TEMP/fm1-emu"
+          PIN=736aded65c8e2e9d652cf595fca248734483a877
+          git init -q "$EMU"
+          git -C "$EMU" remote add origin https://github.com/joakimeriksson/fm1-emu.git
+          git -C "$EMU" fetch --depth=1 origin "$PIN"
+          git -C "$EMU" checkout --detach FETCH_HEAD
+          test "$(git -C "$EMU" rev-parse HEAD)" = "$PIN"
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup run 1.95.0 rustc --version --verbose
+          D="$RUNNER_TEMP/scope-strict"
+          mkdir -p "$D/src"
+          cp strict_scope.rs "$D/src/main.rs"
+          cat > "$D/Cargo.toml" <<EOF
+          [package]
+          name = "strict_scope"
+          version = "0.1.0"
+          edition = "2021"
+          [dependencies]
+          fm1-soc = { path = "$EMU/crates/fm1-soc" }
+          fm1-core = { path = "$EMU/crates/fm1-core" }
+          [workspace]
+          EOF
+          rustup run 1.95.0 cargo generate-lockfile --offline --manifest-path "$D/Cargo.toml"
+          rustup run 1.95.0 cargo test --offline --locked --manifest-path "$D/Cargo.toml"
+          rustup run 1.95.0 cargo build --release --offline --locked --manifest-path "$D/Cargo.toml"
+          test -z "$(git -C "$EMU" status --porcelain)"
+          ELF="$RUNNER_TEMP/scope-objects/candidate.elf"
+          sha256sum "$ELF"
+          failed=0
+          for part in puya uc25hq80; do
+            if test "$part" = puya; then modes="0 1 2"; else modes="0"; fi
+            for mode in $modes; do
+              for preset in 3 9; do
+                prefix="$P/$part-$mode-$preset"
+                if FM1_PANEL_MODE="$mode" FM1_PANEL_PRESET="$preset" FM1_PCM_CAPTURE_PREFIX="$prefix" timeout 60s "$D/target/release/strict_scope" "$ELF" "$part" 800000000; then
+                  if python3 panel_inverse.py "$prefix" "$mode" "$preset"; then
+                    echo "case=$part/$mode/$preset PASS modeled scope contract"
+                  else
+                    echo "case=$part/$mode/$preset HOLD decoder"; failed=1
+                  fi
+                else
+                  echo "case=$part/$mode/$preset HOLD emulator"; failed=1
+                fi
+              done
+            done
+          done
+          if test "$failed" = 0; then
+            cmp "$P/puya-0-3.pcm" "$P/uc25hq80-0-3.pcm"
+            cmp "$P/puya-0-9.pcm" "$P/uc25hq80-0-9.pcm"
+          fi
+          # Keep ephemeral control captures for the alternative compiler matrix.
+          test "$failed" = 0
+      - name: Contextual panel target link and unchanged static audit
+        if: ${{ !cancelled() && steps.link.outcome == 'success' }}
+        working-directory: experiments/scope-weave-005
+        run: |
+          set -eu
+          V="$RUNNER_TEMP/context-variant"
+          mkdir "$V"
+          cp qualify_target.sh qualify_link.sh target_probe.c audit_elf.py scope_weave.h "$V/"
+          # Expand only our local include so the existing audited unity-build
+          # harness can compile both source files without changing its contract.
+          python3 - "$V" <<'PY'
+          import sys
+          from pathlib import Path
+          p=Path("context_panel.c").read_text()
+          inc='#include "scope_context.c"'
+          assert p.count(inc)==1
+          (Path(sys.argv[1])/"app.c").write_text(p.replace(inc,Path("scope_context.c").read_text()))
+          PY
+          sha256sum "$V/app.c"
+          for variant in context-objects context-repeat; do
+            sh "$V/qualify_target.sh" "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/$variant"
+            sh "$V/qualify_link.sh" "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/$variant"
+          done
+          mkdir "$RUNNER_TEMP/context-audit-toolchain"
+          tar -xJf "$RUNNER_TEMP/pi32v2.tar.xz" -C "$RUNNER_TEMP/context-audit-toolchain" --strip-components=1
+          python3 "$V/audit_elf.py" "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/context-audit-toolchain/bin" "$RUNNER_TEMP/context-objects" "$RUNNER_TEMP/context-repeat"
+
+      - name: Contextual native physical-key capture contracts
+        if: ${{ !cancelled() && steps.link.outcome == 'success' }}
+        working-directory: experiments/scope-weave-005
+        run: |
+          set -eu
+          python3 context_capture.py
+      - name: Contextual strict modeled panel and acoustic receiver
+        if: ${{ !cancelled() && steps.link.outcome == 'success' }}
+        working-directory: experiments/scope-weave-005
+        timeout-minutes: 9
+        run: |
+          set -eu
+          ELF="$RUNNER_TEMP/context-objects/candidate.elf"
+          test -s "$ELF"
+          sha256sum "$ELF"
+          EMU="$RUNNER_TEMP/fm1-emu"
+          test "$(git -C "$EMU" rev-parse HEAD)" = 736aded65c8e2e9d652cf595fca248734483a877
+          D="$RUNNER_TEMP/scope-strict"
+          cp strict_context.rs "$D/src/main.rs"
+          rustup run 1.95.0 cargo test --offline --locked --manifest-path "$D/Cargo.toml"
+          rustup run 1.95.0 cargo build --release --offline --locked --manifest-path "$D/Cargo.toml"
+          test -z "$(git -C "$EMU" status --porcelain)"
+          P="$RUNNER_TEMP/context-modeled-pcm"
+          mkdir "$P"
+          failed=0
+          for part in puya uc25hq80; do
+            if test "$part" = puya; then cases="literal witness unwitnessed unknown edited"; else cases="witness"; fi
+            for case in $cases; do
+              prefix="$P/$part-$case"
+              keys="$(python3 -c 'import sys; from context_capture import CASES; print(CASES[sys.argv[1]][0])' "$case")"
+              if FM1_CONTEXT_KEYS="$keys" FM1_PCM_CAPTURE_PREFIX="$prefix" timeout 65s "$D/target/release/strict_scope" "$ELF" "$part" 800000000; then
+                if python3 context_capture.py "$prefix" "$case"; then
+                  echo "context-case=$part/$case PASS"
+                else
+                  echo "context-case=$part/$case HOLD decoder"; failed=1
+                fi
+              else
+                echo "context-case=$part/$case HOLD emulator"; failed=1
+              fi
+            done
+          done
+          if test "$failed" = 0; then
+            cmp "$P/puya-witness.pcm" "$P/uc25hq80-witness.pcm"
+            echo "context cross-model PCM PASS"
+          fi
+          # Keep ephemeral control captures for the alternative compiler matrix.
+          test "$failed" = 0
+      - name: Optional contextual edit policy target compile and ELF link
+        id: policy_link
+        if: ${{ !cancelled() && steps.link.outcome == 'success' }}
+        working-directory: experiments/scope-weave-005
+        run: |
+          set -eu
+          V="$RUNNER_TEMP/policy-variant"
+          mkdir "$V"
+          cp qualify_target.sh qualify_link.sh target_probe.c scope_weave.h "$V/"
+          python3 - "$V" <<'PY'
+          import sys
+          from pathlib import Path
+          p=Path("context_panel.c").read_text()
+          for inc in ("scope_context.c","context_policy.h"):
+              marker='#include "'+inc+'"'
+              assert p.count(marker)==1
+              p=p.replace(marker,Path(inc).read_text())
+          (Path(sys.argv[1])/"app.c").write_text("#define CP_POLICY_TARGET\n"+p)
+          PY
+          sha256sum "$V/app.c"
+          sh "$V/qualify_target.sh" "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/policy-objects"
+          sh "$V/qualify_link.sh" "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/policy-objects"
+          sha256sum "$RUNNER_TEMP/policy-objects/candidate.elf"
+          echo 'Optional policy ELF link only; static audit and modeled execution remain HOLD.'
+      - name: Native live policy differential witness
+        if: ${{ !cancelled() }}
+        working-directory: experiments/scope-weave-005
+        run: |
+          set -eu
+          python3 policy_capture.py
+          for c in gcc clang; do
+            "$c" -std=c11 -O2 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all live_policy_fixture.c -o "$RUNNER_TEMP/live-$c"
+            for mode in 0 1 2 3; do
+              "$RUNNER_TEMP/live-$c" "$mode" > "$RUNNER_TEMP/live-$c-$mode.pcm"
+            done
+          done
+          for mode in 0 1 2 3; do
+            cmp "$RUNNER_TEMP/live-gcc-$mode.pcm" "$RUNNER_TEMP/live-clang-$mode.pcm"
+          done
+          python3 - "$RUNNER_TEMP" <<'PY'
+          import sys
+          from pathlib import Path
+          from policy_capture import pcm,judge
+          p=Path(sys.argv[1])
+          ref=pcm((p/'live-gcc-0.pcm').read_bytes())
+          for mode in (1,2,3):
+              got=pcm((p/f'live-gcc-{mode}.pcm').read_bytes())
+              at=judge(ref,got,2*18522,mode!=1)
+              assert at==(None if mode==1 else 18522)
+              print(f'native mode={mode} restart_frame={at} PASS')
+          PY
+      - name: Optional policy independent ELF rebuild and unchanged static audit
+        if: ${{ !cancelled() && steps.policy_link.outcome == 'success' }}
+        working-directory: experiments/scope-weave-005
+        run: |
+          set -eu
+          V="$RUNNER_TEMP/policy-variant"
+          cp audit_elf.py "$V/"
+          sh "$V/qualify_target.sh" "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/policy-repeat"
+          sh "$V/qualify_link.sh" "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/policy-repeat"
+          python3 "$V/audit_elf.py" "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/audit-toolchain/bin" "$RUNNER_TEMP/policy-objects" "$RUNNER_TEMP/policy-repeat"
+      - name: Optional policy live physical-key DAC differential
+        if: ${{ !cancelled() && steps.policy_link.outcome == 'success' }}
+        working-directory: experiments/scope-weave-005
+        timeout-minutes: 5
+        run: |
+          set -eu
+          ELF="$RUNNER_TEMP/policy-objects/candidate.elf"
+          EMU="$RUNNER_TEMP/fm1-emu"
+          test "$(git -C "$EMU" rev-parse HEAD)" = 736aded65c8e2e9d652cf595fca248734483a877
+          D="$RUNNER_TEMP/scope-strict"
+          cp strict_policy.rs "$D/src/main.rs"
+          rustup run 1.95.0 cargo test --offline --locked --manifest-path "$D/Cargo.toml"
+          rustup run 1.95.0 cargo build --release --offline --locked --manifest-path "$D/Cargo.toml"
+          test -z "$(git -C "$EMU" status --porcelain)"
+          P="$RUNNER_TEMP/policy-live"
+          mkdir "$P"
+          for case in control eq explicit raw; do
+            keys="N0 N1 N6 N8 N8"
+            case "$case" in
+              control) live=N8;;
+              eq) live=N9;;
+              explicit) live=N26;;
+              raw) keys="N0 N1 N6 N8 N25"; live=N9;;
+            esac
+            FM1_CONTEXT_KEYS="$keys" FM1_LIVE_KEY="$live" FM1_PCM_CAPTURE_PREFIX="$P/$case" timeout 65s "$D/target/release/strict_scope" "$ELF" puya 800000000
+          done
+          python3 policy_capture.py "$P/control" "$P/eq" "$P/explicit" "$P/raw"
+          # Keep ephemeral control captures for the alternative compiler matrix.
+      - name: Pinned ELF byte and destination diagnostics (HOLD preserved)
+        if: ${{ !cancelled() && steps.link.outcome == 'success' }}
+        working-directory: experiments/scope-weave-005
+        run: |
+          set -eu
+          node inspect_elf_evidence.mjs --selftest
+          for d in scope-objects scope-repeat; do
+            node inspect_elf_evidence.mjs baseline "$RUNNER_TEMP/$d/baseline.elf" "$RUNNER_TEMP/audit-toolchain/bin/llvm-objdump"
+            node inspect_elf_evidence.mjs scope "$RUNNER_TEMP/$d/candidate.elf" "$RUNNER_TEMP/audit-toolchain/bin/llvm-objdump"
+          done
+      - name: Complete MMIO census at matched peripheral-readiness endpoint
+        if: ${{ !cancelled() && steps.policy_link.outcome == 'success' }}
+        working-directory: experiments/scope-weave-005
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          node mmio_census.mjs --selftest
+          D="$RUNNER_TEMP/scope-strict"
+          EMU="$RUNNER_TEMP/fm1-emu"
+          test "$(git -C "$EMU" rev-parse HEAD)" = 736aded65c8e2e9d652cf595fca248734483a877
+          cp strict_scope.rs "$D/src/main.rs"
+          rustup run 1.95.0 cargo test --offline --locked --manifest-path "$D/Cargo.toml"
+          rustup run 1.95.0 cargo build --release --offline --locked --manifest-path "$D/Cargo.toml"
+          test -z "$(git -C "$EMU" status --porcelain)"
+          P="$RUNNER_TEMP/mmio-boot"
+          mkdir "$P"
+          for part in puya uc25hq80; do
+            for variant in baseline scope context policy; do
+              case "$variant" in
+                baseline) ELF="$RUNNER_TEMP/scope-objects/baseline.elf";;
+                *) ELF="$RUNNER_TEMP/$variant-objects/candidate.elf";;
+              esac
+              sha256sum "$ELF"
+              FM1_MMIO_BOOT_ONLY=1 timeout 45s "$D/target/release/strict_scope" "$ELF" "$part" 800000000 | tee "$P/$part-$variant.log"
+            done
+          done
+          node mmio_census.mjs "$P"
+      - name: Diagnostic MMIO instruction context with unmodified transcript comparison
+        if: ${{ !cancelled() && steps.policy_link.outcome == 'success' }}
+        working-directory: experiments/scope-weave-005
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          node mmio_origin.mjs --selftest
+          D="$RUNNER_TEMP/scope-strict"
+          EMU="$RUNNER_TEMP/fm1-emu"
+          TRACE="$RUNNER_TEMP/fm1-emu-origin"
+          T="$RUNNER_TEMP/scope-origin"
+          cp -a "$EMU" "$TRACE"
+          node mmio_origin.mjs --install "$TRACE"
+          mkdir -p "$T/src"
+          cp strict_scope.rs "$T/src/main.rs"
+          sed "s|$EMU/crates/|$TRACE/crates/|g" "$D/Cargo.toml" > "$T/Cargo.toml"
+          cp "$D/Cargo.lock" "$T/Cargo.lock"
+          rustup run 1.95.0 cargo test --offline --locked --manifest-path "$T/Cargo.toml"
+          rustup run 1.95.0 cargo build --release --offline --locked --manifest-path "$T/Cargo.toml"
+          P="$RUNNER_TEMP/mmio-boot"
+          for part in puya uc25hq80; do
+            for variant in baseline policy; do
+              case "$variant" in
+                baseline) ELF="$RUNNER_TEMP/scope-objects/baseline.elf";;
+                policy) ELF="$RUNNER_TEMP/policy-objects/candidate.elf";;
+              esac
+              FM1_MMIO_BOOT_ONLY=1 timeout 60s "$T/target/release/strict_scope" "$ELF" "$part" 800000000 > "$P/$part-$variant.origin.log" 2>&1
+              node mmio_origin.mjs --compare "$P/$part-$variant.log" "$P/$part-$variant.origin.log" "$ELF" "$RUNNER_TEMP/audit-toolchain/bin/llvm-objdump"
+            done
+          done
+          test -z "$(git -C "$EMU" status --porcelain)"
+      - name: Compiler assembly round-trip evidence (original HOLD preserved)
+        if: ${{ !cancelled() && steps.link.outcome == 'success' }}
+        working-directory: experiments/scope-weave-005
+        timeout-minutes: 4
+        run: |
+          set -eu
+          python3 compiler_evidence.py "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/scope-objects" "$RUNNER_TEMP/scope-repeat"
+      - name: No-jump-table differential target audit and modeled PCM (diagnostic only)
+        if: ${{ !cancelled() && steps.link.outcome == 'success' }}
+        working-directory: experiments/scope-weave-005
+        timeout-minutes: 7
+        run: |
+          set -eu
+          python3 - "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/pi32v2.tar.xz" "$RUNNER_TEMP/audit-toolchain/bin" "$RUNNER_TEMP/scope-objects" <<'PY'
+          import json, re, shutil, subprocess as sp, sys, tempfile
+          from pathlib import Path
+          import audit_elf as audit
+          import compiler_evidence as ce
+          up, archive, tc, reference = map(lambda p: Path(p).resolve(), sys.argv[1:])
+          here = Path.cwd()
+          def run(*a, cwd=None):
+              return sp.check_output([str(x) for x in a], cwd=cwd)
+          def need(ok, msg):
+              if not ok:
+                  raise ValueError(msg)
+          need(run("git", "-C", up, "rev-parse", "HEAD").decode().strip() == ce.PIN, "wrong upstream")
+          need(not run("git", "-C", up, "status", "--porcelain"), "dirty upstream")
+          need(ce.digest(archive) == ce.TOOL, "wrong toolchain archive")
+          flags = ["-target", "pi32v2", "-mcpu=ac791n"]
+          cflags = flags + ["-Os", "-ffunction-sections", "-fno-builtin", "-Wall",
+                            "-Wno-unused-function", "-Ifirmware/hal", "-Ifirmware/src",
+                            "-Ifirmware/gen", '-DAPP_VER="dev"', '-DFELUCCA_ID="FM-1_990"']
+          with tempfile.TemporaryDirectory(prefix="fm1-no-jt-") as t:
+              root = Path(t)
+              source = root / "source"
+              source.mkdir()
+              (root / "src.tar").write_bytes(run("git", "-C", up, "archive", ce.PIN))
+              run("tar", "-xf", root / "src.tar", "-C", source)
+              startup = []
+              for name in ("firmware/crt0.S", "firmware/hal/fm1_vec.S", "firmware/hal/fm1_isr.S"):
+                  obj = root / (Path(name).stem + ".o")
+                  run(tc/"clang", *flags, "-c", name, "-o", obj, cwd=source)
+                  startup.append(obj)
+              for variant, expected in ce.ELFS.items():
+                  if variant == "candidate":
+                      shutil.copyfile(here/"app.c", source/"firmware/src/dinghy.c")
+                      shutil.copyfile(here/"scope_weave.h", source/"firmware/src/scope_weave.h")
+                  def build(name, extra):
+                      obj, elf = root/(name+".o"), root/(name+".elf")
+                      run(tc/"clang", *cflags, *extra, "-c", "firmware/src/dinghy.c", "-o", obj, cwd=source)
+                      run(tc/"ld.lld", "--gc-sections", "-e", "_start", "-T",
+                          "firmware/app.ld", *startup, obj, "-o", elf, cwd=source)
+                      return obj, elf
+                  control_obj, control = build(variant+"-control", [])
+                  need(ce.digest(control) == expected == ce.digest(reference/(variant+".elf")), "control ELF mismatch")
+                  need(control_obj.read_bytes() == (reference/(variant+".o")).read_bytes(), "control object mismatch")
+                  try:
+                      obj, elf = build(variant+"-no-jt", ["-fno-jump-tables"])
+                  except sp.CalledProcessError as e:
+                      print(json.dumps({"variant":variant,"compile_or_link_exit":e.returncode,"status":"HOLD"}), flush=True)
+                      raise
+                  obj2, elf2 = build(variant+"-no-jt-repeat", ["-fno-jump-tables"])
+                  need(obj.read_bytes()==obj2.read_bytes() and elf.read_bytes()==elf2.read_bytes(), "diagnostic rebuild mismatch")
+                  asm = root/(variant+".s")
+                  run(tc/"clang", *cflags, "-fno-jump-tables", "-S", "firmware/src/dinghy.c", "-o", asm, cwd=source)
+                  rows = ce.lines(asm.read_text())
+                  dis = run(tc/"llvm-objdump", "-d", elf).decode()
+                  unknown = [line for line in dis.splitlines()
+                             if re.match(r"^\s*[0-9a-fA-F]+:", line) and re.search(r"<unknown>|\bunknown\b", line, re.I)]
+                  delta = ce.elf_delta(control.read_bytes(), elf.read_bytes())
+                  _, screen_hold = audit.audit(elf, tc)
+                  print("no_jt_diagnostic " + json.dumps({
+                      "variant":variant, "control_sha256":expected, "diagnostic_sha256":ce.digest(elf),
+                      "rebuild_exact":True, "changed_sections":len(delta["section_changes"]),
+                      "load_segments_equal":delta["load_segments_equal"],
+                      "assembly_tbb":sum(bool(re.match(r"^tbb\b", row)) for row in rows),
+                      "assembly_table_labels":sum(bool(re.match(r"^\.Ljta\w*:$", row)) for row in rows),
+                      "unknown_rows":len(unknown), "unchanged_screen_hold":screen_hold,
+                      "installation_authorized":False,"status":"HOLD"
+                  }, sort_keys=True), flush=True)
+                  need(not screen_hold and not unknown, "diagnostic static screen regressed")
+                  if variant == "candidate":
+                      import os
+                      emu = Path(os.environ["RUNNER_TEMP"]) / "fm1-emu"
+                      strict = Path(os.environ["RUNNER_TEMP"]) / "scope-strict"
+                      need(run("git", "-C", emu, "rev-parse", "HEAD").decode().strip() ==
+                           "736aded65c8e2e9d652cf595fca248734483a877", "wrong emulator pin")
+                      need(not run("git", "-C", emu, "status", "--porcelain"), "dirty emulator")
+                      # Rebuild exact existing strict panel witness, not an instrumented emulator.
+                      shutil.copyfile(here/"strict_scope.rs", strict/"src/main.rs")
+                      sp.run(["rustup", "run", "1.95.0", "cargo", "build", "--release",
+                              "--offline", "--locked", "--manifest-path", str(strict/"Cargo.toml")], check=True)
+                      exe = strict/"target/release/strict_scope"
+                      import hashlib
+                      # strict_scope deliberately selects candidate panel behavior by filename.
+                      # Preserve the original witness, and stage byte-identical inputs under its
+                      # established candidate.elf basename in separate disposable directories.
+                      staged = []
+                      for label, image in (("control", control), ("no-jt", elf)):
+                          directory = root/label
+                          directory.mkdir()
+                          candidate = directory/"candidate.elf"
+                          shutil.copyfile(image, candidate)
+                          need(candidate.read_bytes() == image.read_bytes(), "staged ELF mismatch")
+                          staged.append((label, candidate))
+                      need(staged[0][1] != staged[1][1], "aliased candidate paths")
+                      need(ce.digest(staged[0][1]) == expected, "staged control identity mismatch")
+                      need(ce.digest(staged[1][1]) == ce.digest(elf), "staged diagnostic identity mismatch")
+                      from panel_inverse import SPAN
+                      def compare_pcm(a, b):
+                          need(a and b and len(a)%4 == 0 and len(b)%4 == 0, "invalid stereo PCM")
+                          first = next((i for i, (x,y) in enumerate(zip(a,b)) if x != y), None)
+                          if first is None and len(a) != len(b):
+                              first = min(len(a),len(b))
+                          return a == b, None if first is None else first//4
+                      need(compare_pcm(b"1234",b"1234") == (True,None), "equal fixture")
+                      need(compare_pcm(b"1234abcd",b"1234abce") == (False,1), "sample mismatch fixture")
+                      need(compare_pcm(b"1234",b"1234abcd") == (False,1), "length mismatch fixture")
+                      all_exact = True
+                      for part, mode, preset in (("puya", 0, 3), ("uc25hq80", 0, 9), ("puya", 2, 9)):
+                          captures, aligned, bounds = [], [], []
+                          for label, image in staged:
+                              prefix = root/f"{part}-{mode}-{preset}-{label}"
+                              env = dict(os.environ, FM1_PANEL_MODE=str(mode), FM1_PANEL_PRESET=str(preset),
+                                         FM1_PCM_CAPTURE_PREFIX=str(prefix))
+                              sp.run([str(exe), str(image), part, "800000000"],
+                                     env=env, check=True, timeout=60)
+                              inverse = sp.check_output([sys.executable, str(here/"panel_inverse.py"), str(prefix),
+                                                        str(mode), str(preset)], timeout=30, text=True)
+                              print(inverse, end="", flush=True)
+                              origins = re.findall(r"\borigin_frame=(\d+)\b", inverse)
+                              need(len(origins)==1, "missing unique acoustic origin")
+                              pcm = prefix.with_suffix(".pcm").read_bytes()
+                              capture_bounds = tuple(map(int,prefix.with_suffix(".bounds").read_text().split()))
+                              offset = 4*int(origins[0])
+                              # Two phrases of SPAN int16 samples each; alignment is diagnostic
+                              # only and never substitutes for the complete PCM identity gate.
+                              stop = offset+4*SPAN
+                              need(0 <= offset < stop <= len(pcm), "invalid phrase span")
+                              captures.append(pcm)
+                              aligned.append(pcm[offset:stop])
+                              bounds.append(capture_bounds)
+                          exact, first = compare_pcm(*captures)
+                          phrase_exact, phrase_first = compare_pcm(*aligned)
+                          all_exact = all_exact and exact
+                          print("no_jt_pcm " + json.dumps({"part":part,"mode":mode,"preset":preset,
+                              "bytes":[len(c) for c in captures],
+                              "sha256":[hashlib.sha256(c).hexdigest() for c in captures],
+                              "bounds":bounds,"first_difference_frame":first,
+                              "aligned_two_phrases_exact":phrase_exact,
+                              "aligned_first_difference_frame":phrase_first,
+                              "exact":exact,"installation_authorized":False}), flush=True)
+                      need(all_exact, "modeled PCM mismatch")
+          PY
+      - name: Alternative no-jump-table full existing instrument matrix (diagnostic only)
+        if: ${{ !cancelled() && steps.policy_link.outcome == 'success' }}
+        working-directory: experiments/scope-weave-005
+        timeout-minutes: 12
+        run: |
+          set -eu
+          python3 - <<'PY'
+          import hashlib, json, os, shutil, subprocess as sp, sys, tempfile
+          from pathlib import Path
+          import audit_elf as audit
+          import compiler_evidence as ce
+          from context_capture import CASES
+          here = Path.cwd()
+          tmp = Path(os.environ["RUNNER_TEMP"])
+          up, archive, tc = tmp/"dinghy", tmp/"pi32v2.tar.xz", tmp/"audit-toolchain/bin"
+          emu, strict = tmp/"fm1-emu", tmp/"scope-strict"
+          def run(*a, cwd=None):
+              return sp.check_output([str(x) for x in a], cwd=cwd)
+          def need(ok, msg):
+              if not ok:
+                  raise ValueError(msg)
+          def same_capture(a, b):
+              # Capture boundaries are part of the contract, not a phase-aligning waiver.
+              need(a and b and len(a)%4==0 and len(b)%4==0, "invalid stereo capture")
+              first = next((i//4 for i,(x,y) in enumerate(zip(a,b)) if x!=y), None)
+              if first is None and len(a)!=len(b):
+                  first = min(len(a),len(b))//4
+              return a==b, first
+          need(same_capture(b"1234",b"1234")== (True,None), "positive comparator")
+          need(same_capture(b"1234abcd",b"1234abce")== (False,1), "mutation comparator")
+          need(same_capture(b"1234",b"1234abcd")== (False,1), "length comparator")
+          need(run("git","-C",up,"rev-parse","HEAD").decode().strip()==ce.PIN, "wrong upstream")
+          need(not run("git","-C",up,"status","--porcelain"), "dirty upstream")
+          need(ce.digest(archive)==ce.TOOL, "wrong toolchain archive")
+          need(run("git","-C",emu,"rev-parse","HEAD").decode().strip()==
+               "736aded65c8e2e9d652cf595fca248734483a877", "wrong emulator")
+          need(not run("git","-C",emu,"status","--porcelain"), "dirty emulator")
+          flags=["-target","pi32v2","-mcpu=ac791n"]
+          cflags=flags+["-Os","-ffunction-sections","-fno-builtin","-Wall",
+                        "-Wno-unused-function","-Ifirmware/hal","-Ifirmware/src",
+                        "-Ifirmware/gen",'-DAPP_VER="dev"','-DFELUCCA_ID="FM-1_990"']
+          failed=[]
+          with tempfile.TemporaryDirectory(prefix="fm1-alt-full-") as t:
+              root=Path(t)
+              src=root/"source"
+              src.mkdir()
+              (root/"src.tar").write_bytes(run("git","-C",up,"archive",ce.PIN))
+              run("tar","-xf",root/"src.tar","-C",src)
+              startup=[]
+              for name in ("firmware/crt0.S","firmware/hal/fm1_vec.S","firmware/hal/fm1_isr.S"):
+                  obj=root/(Path(name).stem+".o")
+                  run(tc/"clang",*flags,"-c",name,"-o",obj,cwd=src)
+                  startup.append(obj)
+              for variant in ("scope","context","policy"):
+                  reference=tmp/(variant+"-objects")
+                  local=here if variant=="scope" else tmp/(variant+"-variant")
+                  shutil.copyfile(local/"app.c",src/"firmware/src/dinghy.c")
+                  shutil.copyfile(local/"scope_weave.h",src/"firmware/src/scope_weave.h")
+                  def build(label, extra):
+                      d=root/(variant+"-"+label)
+                      d.mkdir()
+                      obj,elf=d/"candidate.o",d/"candidate.elf"
+                      run(tc/"clang",*cflags,*extra,"-c","firmware/src/dinghy.c","-o",obj,cwd=src)
+                      run(tc/"ld.lld","--gc-sections","-e","_start","-T","firmware/app.ld",
+                          *startup,obj,"-o",elf,cwd=src)
+                      return obj,elf
+                  control_obj,control=build("control",[])
+                  need(control_obj.read_bytes()==(reference/"candidate.o").read_bytes(),variant+" control object mismatch")
+                  need(control.read_bytes()==(reference/"candidate.elf").read_bytes(),variant+" control ELF mismatch")
+                  repeat_ref=tmp/(variant+"-repeat")/"candidate.elf"
+                  need(control.read_bytes()==repeat_ref.read_bytes(),variant+" inherited rebuild mismatch")
+                  obj,elf=build("alternative",["-fno-jump-tables"])
+                  obj2,elf2=build("repeat",["-fno-jump-tables"])
+                  need(obj.read_bytes()==obj2.read_bytes() and elf.read_bytes()==elf2.read_bytes(),variant+" alternative rebuild mismatch")
+                  _,hold=audit.audit(elf,tc)
+                  print("alternative_elf "+json.dumps({"variant":variant,"control":ce.digest(control),
+                        "alternative":ce.digest(elf),"rebuild_exact":True,"static_hold":hold,
+                        "installation_authorized":False}),flush=True)
+                  if hold: failed.append(variant+"/static")
+                  shutil.copyfile(here/("strict_"+variant+".rs"),strict/"src/main.rs")
+                  sp.run(["rustup","run","1.95.0","cargo","build","--release","--offline","--locked",
+                          "--manifest-path",str(strict/"Cargo.toml")],check=True)
+                  exe=strict/"target/release/strict_scope"
+                  out=root/(variant+"-captures")
+                  out.mkdir()
+                  if variant=="scope":
+                      cases=[(part,f"{part}-{mode}-{preset}",{"FM1_PANEL_MODE":str(mode),
+                              "FM1_PANEL_PRESET":str(preset)},["panel_inverse.py",str(mode),str(preset)])
+                             for part,modes in (("puya",(0,1,2)),("uc25hq80",(0,)))
+                             for mode in modes for preset in (3,9)]
+                      originals=tmp/"scope-pcm"
+                  elif variant=="context":
+                      cases=[(part,f"{part}-{case}",{"FM1_CONTEXT_KEYS":CASES[case][0]},
+                              ["context_capture.py",case])
+                             for part,names in (("puya",tuple(CASES)),("uc25hq80",("witness",)))
+                             for case in names]
+                      originals=tmp/"context-modeled-pcm"
+                  else:
+                      cases=[("puya",case,{"FM1_CONTEXT_KEYS":"N0 N1 N6 N8 "+("N25" if case=="raw" else "N8"),
+                              "FM1_LIVE_KEY":live},None)
+                             for case,live in (("control","N8"),("eq","N9"),("explicit","N26"),("raw","N9"))]
+                      originals=tmp/"policy-live"
+                  for part,name,settings,decoder in cases:
+                      prefix=out/name
+                      env={k:v for k,v in os.environ.items() if not k.startswith("FM1_")}
+                      env.update(settings,FM1_PCM_CAPTURE_PREFIX=str(prefix))
+                      try:
+                          sp.run([str(exe),str(elf),part,"800000000"],env=env,check=True,timeout=65)
+                          if decoder:
+                              sp.run([sys.executable,decoder[0],str(prefix),*decoder[1:]],check=True,timeout=60)
+                          original=originals/name
+                          a,b=(p.with_suffix(".pcm").read_bytes() for p in (original,prefix))
+                          exact,first=same_capture(a,b)
+                          suffixes=(".bounds",".edit",".witness") if variant=="policy" else (".bounds",)
+                          receipts={suffix:tuple(map(int,original.with_suffix(suffix).read_text().split()))==
+                                    tuple(map(int,prefix.with_suffix(suffix).read_text().split()))
+                                    for suffix in suffixes}
+                          print("alternative_pcm "+json.dumps({"variant":variant,"case":name,
+                                "bytes":[len(a),len(b)],"sha256":[hashlib.sha256(x).hexdigest() for x in (a,b)],
+                                "first_difference_frame":first,"pcm_exact":exact,"receipt_exact":receipts,
+                                "installation_authorized":False}),flush=True)
+                          if not exact or not all(receipts.values()): failed.append(variant+"/"+name)
+                      except (OSError,ValueError,sp.SubprocessError) as e:
+                          print("alternative_case_hold "+json.dumps({"variant":variant,"case":name,"error":str(e)}),flush=True)
+                          failed.append(variant+"/"+name)
+                  if variant=="policy":
+                      sp.run([sys.executable,"policy_capture.py",*[str(out/n) for n in ("control","eq","explicit","raw")]],
+                             check=True,timeout=120)
+                  need(not run("git","-C",emu,"status","--porcelain"),"emulator changed")
+              need(not failed,"alternative qualification HOLD: "+str(failed))
+              print("alternative_matrix=PASS 18 modeled capture comparisons; no installation authorization",flush=True)
+          PY
+
+      - name: Alternative no-jump-table exact textual assembly provenance (diagnostic only)
+        if: ${{ !cancelled() && steps.policy_link.outcome == 'success' }}
+        working-directory: experiments/scope-weave-005
+        timeout-minutes: 6
+        run: |
+          set -eu
+          python3 - <<'PY'
+          import json, os, shutil, subprocess as sp, tempfile
+          from pathlib import Path
+          import audit_elf as audit
+          import compiler_evidence as ce
+          
+          tmp = Path(os.environ["RUNNER_TEMP"])
+          up, archive, tc = tmp/"dinghy", tmp/"pi32v2.tar.xz", tmp/"audit-toolchain/bin"
+          here = Path.cwd()
+          expected = {
+              "baseline": "5dd622e2af4bfaffd78f9621392a646c828c5e421b93e74aa41cd3fb9e6b943d",
+              "scope": "90e098ef48f757e40f1828efd62a5c6014e9d84451b54fa983aee5325e8e0eeb",
+              "context": "0bde51e6241aa8a4f444872ac8a9708ea3d3fd52946c95aced2a10861c149093",
+              "policy": "8fc8a2656886133b6a7367381cb03e13af86614aaa4cd477b66f1f5a98b10f61",
+          }
+          def run(*args, cwd=None):
+              return sp.check_output([str(a) for a in args], cwd=cwd, timeout=60)
+          def need(ok, msg):
+              if not ok:
+                  raise ValueError(msg)
+          def accepted(row):
+              # A route must genuinely traverse emitted assembly; matching direct C
+              # compilation is a control, not an assembly-provenance witness.
+              return (row.get("route", "").startswith("assembler-")
+                      and row.get("compile_exit") == 0 and row.get("link_exit") == 0
+                      and row.get("object_exact") is True and row.get("elf_exact") is True
+                      and row.get("load_segments_equal") is True)
+          positive = dict(route="assembler-default", compile_exit=0, link_exit=0,
+                          object_exact=True, elf_exact=True, load_segments_equal=True)
+          need(accepted(positive), "positive acceptance fixture")
+          for key, value in [("route","direct-no-relax-all"),("route","driver-save-temps"),
+                             ("compile_exit",1),("link_exit",1),("object_exact",False),
+                             ("elf_exact",False),("load_segments_equal",False)]:
+              need(not accepted(dict(positive, **{key:value})), "negative fixture "+key)
+          for key in positive:
+              need(not accepted({k:v for k,v in positive.items() if k!=key}), "missing field "+key)
+          print("no_jt_roundtrip_selector_selftest=14/14 PASS", flush=True)
+          need(run("git","-C",up,"rev-parse","HEAD").decode().strip()==ce.PIN, "wrong upstream")
+          need(not run("git","-C",up,"status","--porcelain").strip(), "dirty upstream")
+          need(ce.digest(archive)==ce.TOOL, "wrong toolchain archive")
+          target = ["-target","pi32v2","-mcpu=ac791n"]
+          flags = target+["-Os","-ffunction-sections","-fno-builtin","-Wall",
+                          "-Wno-unused-function","-Ifirmware/hal","-Ifirmware/src","-Ifirmware/gen",
+                          '-DAPP_VER="dev"','-DFELUCCA_ID="FM-1_990"','-fno-jump-tables']
+          held = []
+          with tempfile.TemporaryDirectory(prefix="fm1-alt-roundtrip-") as t:
+              root = Path(t)
+              src = root/"src"
+              src.mkdir()
+              (root/"source.tar").write_bytes(run("git","-C",up,"archive",ce.PIN))
+              run("tar","-xf",root/"source.tar","-C",src)
+              startup=[]
+              for name in ("firmware/crt0.S","firmware/hal/fm1_vec.S","firmware/hal/fm1_isr.S"):
+                  obj=root/(Path(name).stem+".o")
+                  run(tc/"clang",*target,"-c",name,"-o",obj,cwd=src)
+                  startup.append(obj)
+              link=["--gc-sections","-e","_start","-T","firmware/app.ld",*startup]
+              for variant, digest in expected.items():
+                  if variant!="baseline":
+                      local=here if variant=="scope" else tmp/(variant+"-variant")
+                      shutil.copyfile(local/"app.c",src/"firmware/src/dinghy.c")
+                      shutil.copyfile(local/"scope_weave.h",src/"firmware/src/scope_weave.h")
+                  source="firmware/src/dinghy.c"
+                  direct_obj,direct_elf,asm=(root/(variant+s) for s in (".o",".elf",".s"))
+                  run(tc/"clang",*flags,"-c",source,"-o",direct_obj,cwd=src)
+                  run(tc/"ld.lld",*link,direct_obj,"-o",direct_elf,cwd=src)
+                  need(ce.digest(direct_elf)==digest,variant+" alternative ELF differs from modeled evidence")
+                  _,screen_hold=audit.audit(direct_elf,tc)
+                  need(not screen_hold,variant+" unchanged static screen HOLD")
+                  run(tc/"clang",*flags,"-S",source,"-o",asm,cwd=src)
+                  # Exact comparison of default textual assembly path and existing
+                  # relaxation probes. No waiver based on equivalent section sizes.
+                  o,e=(root/(variant+"-default"+s) for s in (".o",".elf"))
+                  a=sp.run([str(tc/"clang"),*target,"-x","assembler","-c",str(asm),"-o",str(o)],
+                           cwd=src,capture_output=True,timeout=60)
+                  row={"route":"assembler-default","compile_exit":a.returncode}
+                  if a.returncode==0:
+                      b=sp.run([str(x) for x in [tc/"ld.lld",*link,o,"-o",e]],
+                               cwd=src,capture_output=True,timeout=60)
+                      row["link_exit"]=b.returncode
+                      if b.returncode==0:
+                          od=ce.elf_delta(direct_obj.read_bytes(),o.read_bytes())
+                          ed=ce.elf_delta(direct_elf.read_bytes(),e.read_bytes())
+                          row.update(object_exact=od["exact"],elf_exact=ed["exact"],
+                                     load_segments_equal=ed["load_segments_equal"])
+                  routes=[row]+ce.relaxation_probe(tc/"clang",tc/"ld.lld",target,flags,src,root,
+                                                   variant,asm,link,direct_obj,direct_elf)
+                  matches=[x["route"] for x in routes if accepted(x)]
+                  prof=ce.elf_profile(direct_elf.read_bytes())
+                  sections={x[0]:x[4] for x in prof["sections"] if x[2]&2}
+                  print("no_jt_roundtrip "+json.dumps({"variant":variant,"elf_sha256":digest,
+                        "default_route":row,"exact_textual_routes":matches,"section_bytes":sections,
+                        "installation_authorized":False},sort_keys=True),flush=True)
+                  if not matches:
+                      held.append(variant)
+          need(not held,"alternative assembly provenance HOLD: "+str(held))
+          print("no_jt_roundtrip=PASS exact emitted-assembly routes for all four ELFs; installation HOLD",flush=True)
+          PY
+# No package, no binary publication or physical device access.
