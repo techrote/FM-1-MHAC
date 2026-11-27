@@ -1,0 +1,31 @@
+name: PRE-HARDWARE-CLOSURE-001
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'pre-hardware-closure-001/**'
+      - '.github/workflows/pre-hardware-closure-001.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pre-hardware-closure-001-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  closure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Execute frozen pre-hardware closure
+        shell: bash
+        run: bash pre-hardware-closure-001/ci.sh
+      - name: Upload closure evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: PRE-HARDWARE-CLOSURE-001-evidence
+          path: ${{ runner.temp }}/pre-hardware-closure-evidence
+          retention-days: 90
