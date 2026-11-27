@@ -10,11 +10,18 @@ typedef struct { int32_t ln,ld,hn,hd; } rx_gain;
 typedef struct {
     rx_gain slot[6][10];
     sw_state tone[9];
-    uint32_t pos,tick;
-    uint8_t observed,failed;
+    uint32_t tick;
+    uint16_t offset;
+    uint8_t slot_index,observed,failed;
 } scope_rx;
 static rx_gain rx_prior(void){return (rx_gain){1,8,5,4};}
-static int rx_gt(int32_t a,int32_t b,int32_t c,int32_t d){return (int64_t)a*d>(int64_t)c*b;}
+/* Bounds: a/c in [-32770,32770], b/d in [1,2048].
+ * sw_render produces at most 2048 in absolute value in a zeroed frame.
+ * Thus every signed cross-product fits in int32_t (<= 67112960). */
+static int rx_gt(int32_t a,int32_t b,int32_t c,int32_t d){return a*d>c*b;}
+static void rx_advance(scope_rx *s){
+    if(++s->offset==s->tick){s->offset=0;s->slot_index++;}
+}
 static int rx_live(rx_gain g){return !rx_gt(g.ln,g.ld,g.hn,g.hd);}
 static void rx_dead(rx_gain *g){*g=(rx_gain){1,1,0,1};}
 static void rx_limit(rx_gain *g,int32_t a,int32_t b){
@@ -38,9 +45,9 @@ int scope_rx_init(scope_rx *s,unsigned rate,unsigned observed){
 /* A block may cross slot boundaries. On malformed length, latch failure.
  * Caller supplies 2*n samples; NULL is valid only when n==0. */
 int scope_rx_feed(scope_rx *s,const int16_t *pcm,uint32_t n){
-    if(s->failed||!s->tick||n>6*s->tick-s->pos||(!pcm&&n)){s->failed=1;return -1;}
-    for(uint32_t i=0;i<n;i++,s->pos++){
-        unsigned j=s->pos/s->tick,k=s->pos%s->tick;
+    if(s->failed||!s->tick||n>(6u-s->slot_index)*s->tick-s->offset||(!pcm&&n)){s->failed=1;return -1;}
+    for(uint32_t i=0;i<n;i++,rx_advance(s)){
+        unsigned j=s->slot_index,k=s->offset;
         if(!(s->observed&(1u<<j)))continue;
         if(k>=SW_ENV){if(pcm[2*i]||pcm[2*i+1]){s->failed=1;return -1;}continue;}
         if(!k){memset(s->tone,0,sizeof s->tone);for(unsigned t=0;t<9;t++)sw_trigger(&s->tone[t],t);}
@@ -57,7 +64,7 @@ int scope_rx_feed(scope_rx *s,const int16_t *pcm,uint32_t n){
  * or -1 for invalid/incomplete input; masks cleared on all error paths. */
 int scope_rx_finish(const scope_rx *s,unsigned modes,uint32_t masks[3]){
     masks[0]=masks[1]=masks[2]=0;
-    if(s->failed||!s->tick||s->pos!=6*s->tick||!modes||modes>7)return -1;
+    if(s->failed||!s->tick||s->slot_index!=6||s->offset||!modes||modes>7)return -1;
     int count=0;
     for(unsigned m=0;m<3;m++)if(modes&(1u<<m))for(unsigned p=0;p<27;p++){
         rx_gain g=rx_prior();
@@ -98,6 +105,20 @@ int main(void){
     unsigned full=0,erasure=0;scope_rx s;uint32_t got[3];
     for(unsigned m=0;m<3;m++)for(unsigned p=0;p<27;p++){check(p,m,p%3==0?0:p%3==1?13:26,63,p%3,p%2?257:1);full++;}
     for(unsigned m=0;m<3;m++)for(unsigned mask=0;mask<64;mask++){check(3,m,26,mask,mask%3,1024);erasure++;}
+    for(unsigned r=0;r<=26;r++)for(unsigned m=0;m<3;m++){
+        check((r*7+m)%27,m,r,63,r%3,1+r*31);
+        check((r*7+m)%27,m,r,(r*13+m)%64,r%3,10000-r*200+1);
+    }
+    const int32_t num[]={-32770,-32769,-1,0,1,32769,32770},den[]={1,2,8,2047,2048};
+    unsigned products=0;
+    for(unsigned a=0;a<7;a++)for(unsigned b=0;b<5;b++)for(unsigned c=0;c<7;c++)for(unsigned d=0;d<5;d++){
+        assert(rx_gt(num[a],den[b],num[c],den[d])==((int64_t)num[a]*den[d]>(int64_t)num[c]*den[b]));products++;
+    }
+    assert(!scope_rx_init(&s,0,0));assert(!scope_rx_feed(&s,0,0));
+    assert(!scope_rx_feed(&s,input,60000));assert(s.slot_index==6&&!s.offset);
+    assert(!scope_rx_feed(&s,0,0));assert(scope_rx_finish(&s,7,got)==81);
+    assert(scope_rx_feed(&s,input,1)==-1);
+    printf("all_rate_cases=162 boundary_products=%u end_cursor=PASS\n",products);
     generate(3,0,26,2);assert(!scope_rx_init(&s,26,63));assert(!scope_rx_feed(&s,input,1));assert(scope_rx_finish(&s,7,got)==-1&&!got[0]);
     assert(scope_rx_feed(&s,input,28800)==-1);assert(scope_rx_finish(&s,7,got)==-1);
     assert(scope_rx_init(&s,27,63)==-1);assert(scope_rx_init(&s,26,64)==-1);

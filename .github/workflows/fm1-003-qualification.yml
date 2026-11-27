@@ -33,6 +33,14 @@ jobs:
           done
           cmp "$RUNNER_TEMP/gcc.wav" "$RUNNER_TEMP/clang.wav"
           printf '%s\n' 'd0ef28f1703cb312f6da700acfb54ebdb8761192ad6daa48d9b629dd86929bea  gcc.wav' | (cd "$RUNNER_TEMP" && sha256sum -c -)
+      - name: Native optional streaming receiver (all rates and arithmetic bounds)
+        working-directory: experiments/scope-weave-005
+        run: |
+          set -eu
+          for c in gcc clang; do
+            "$c" -std=c11 -O2 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all -DSCOPE_RX_TEST scope_rx.c -o "$RUNNER_TEMP/rx-$c"
+            "$RUNNER_TEMP/rx-$c"
+          done
       - name: Native exact acoustic inverse and panel fixture
         working-directory: experiments/scope-weave-005
         run: |
@@ -89,6 +97,20 @@ jobs:
           mkdir "$RUNNER_TEMP/audit-toolchain"
           tar -xJf "$RUNNER_TEMP/pi32v2.tar.xz" -C "$RUNNER_TEMP/audit-toolchain" --strip-components=1
           python3 audit_elf.py "$RUNNER_TEMP/dinghy" "$RUNNER_TEMP/audit-toolchain/bin" "$RUNNER_TEMP/scope-objects" "$RUNNER_TEMP/scope-repeat"
+      - name: Optional streaming receiver target object (no firmware integration)
+        if: ${{ !cancelled() && steps.link.outcome == 'success' }}
+        working-directory: experiments/scope-weave-005
+        timeout-minutes: 2
+        run: |
+          set -eu
+          TC="$RUNNER_TEMP/audit-toolchain/bin"
+          test -x "$TC/clang"
+          "$TC/clang" -target pi32v2 -mcpu=ac791n -std=c11 -Os -ffreestanding -fno-builtin -Wall -Wextra -Werror -c scope_rx.c -o "$RUNNER_TEMP/scope-rx.o"
+          "$TC/llvm-readelf" -h "$RUNNER_TEMP/scope-rx.o"
+          "$TC/llvm-size" "$RUNNER_TEMP/scope-rx.o"
+          "$TC/llvm-nm" -u "$RUNNER_TEMP/scope-rx.o"
+          sha256sum scope_rx.c scope_weave.h "$RUNNER_TEMP/scope-rx.o"
+          echo 'Receiver target object only: no link, target execution, real-time budget or physical input claim.'
       - name: Direct object provenance and map-enabled exact relink (HOLD preserved)
         if: ${{ !cancelled() && steps.link.outcome == 'success' }}
         working-directory: experiments/scope-weave-005
